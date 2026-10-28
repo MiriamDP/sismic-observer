@@ -1,0 +1,152 @@
+name: sismic-observer
+
+services:
+  kafka:
+    image: apache/kafka:4.1.2
+    hostname: kafka
+    ports:
+      - "9092:9092"
+    environment:
+
+      KAFKA_NODE_ID: 1
+      CLUSTER_ID: Te623nQlp-i90sD--43aPx
+
+      KAFKA_PROCESS_ROLES: broker,controller # el nodo actua como broker y controlador
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1 # unica copia de los metadatos del broker
+
+      KAFKA_LISTENERS: CONTROLLER://:29093,HOST://:9092,INTERNAL://:19092
+      KAFKA_ADVERTISED_LISTENERS: HOST://localhost:9092,INTERNAL://kafka:19092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,HOST:PLAINTEXT,INTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0 # tiempo de espera de kafka antes de rebalancerar grupos de consumidores
+      # ideal para desarrollo porque el grupo de consumidores puede empezar a procesar antes, el valor por defecto es 3000ms
+
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1 # replicas que bastan que esten sincronizas a la hora de escribir en el topic interno de __transaction_state (info transaccion de los productos)
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1 # factor de replicacion del topic interno
+
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: 1 # igual pero para los grupos de consumidores
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: 1 #igual para los grupos de consumidores
+
+      KAFKA_NUM_PARTITIONS: 3 # numero de particiones de cada nuevo topic si no se indica lo contrario
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true" # permite la creacion de topics sin necesidad de crearlos manualmente
+
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs # donde se guardan los logs
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092",
+        ]
+      interval: 5s
+      timeout: 10s
+      retries: 24
+      start_period: 25s
+
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  producer:
+    # enviara los mensajes a kafka desde el puerto 19092
+    build: ./producer # docker compstruira una imagen usando los archivos de este directorio
+    environment:
+      KAFKA_BOOTSTRAP: kafka:19092
+      KAFKA_TOPIC: earthquakes # nombre del topic al que enviara
+    depends_on:
+      kafka: # servicio del que depende
+        condition: service_healthy
+    restart: unless-stopped # docker intentara reiniciarlo si termina inesperadamente, no se reinicia a no ser que lo paremos nosotros explicitamente
+    healthcheck: # comprueba un endpoint especifico del productor
+      test:
+          [
+            "CMD",
+            "python",
+            "-c",
+            "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8082/health')",
+          ]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  consumer:
+    build: ./consumer
+    environment:
+      KAFKA_BOOTSTRAP: kafka:19092
+      KAFKA_TOPIC: earthquakes
+      KAFKA_GROUP: earthquake-processor
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    depends_on: #depende tanto de kafka como de la base de datos ya que si esta no esta disponible no tiene donde volcar los datos
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy 
+    restart: unless-stopped
+    healthcheck:
+      test:
+          [
+            "CMD",
+            "python",
+            "-c",
+            "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health')",
+          ]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  api:
+    build: ./api
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  
+  pgadmin: # gestor visual de la base de datos
+    image: dpage/pgadmin4:latest
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
+    ports:
+      - "127.0.0.1:5050:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+
+volumes:
+  postgres_data:
