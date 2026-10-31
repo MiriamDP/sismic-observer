@@ -115,6 +115,9 @@ services:
     build: ./api
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      HISTORICAL_IMPORT_ENABLED: "true"
+      HISTORICAL_IMPORT_START_DATE: "2000-01-01" #puede tardar hasta 15min
+      HISTORICAL_IMPORT_MIN_MAGNITUDE: ""
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
