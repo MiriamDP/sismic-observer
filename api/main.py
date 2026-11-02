@@ -1,4 +1,5 @@
 
+from math import ceil
 import os
 import json
 import logging
@@ -10,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import psycopg
 from psycopg.rows import dict_row
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from pydantic import BaseModel, Field
 
 app = FastAPI(title="Sismic Observer API")
@@ -505,32 +506,59 @@ def import_status():
 # --------------------------------------------------
 # ENDPOINT: CONSULTAR TERREMOTOS
 # --------------------------------------------------
-
 @app.get("/earthquakes")
 def get_earthquakes(
-    limit: int = 100,
-    offset: int = 0
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100)
 ):
+    try:
+        offset = (page - 1) * page_size
 
-    if not 1 <= limit <= 1000 or offset < 0:
+        with psycopg.connect(
+            DATABASE_URL,
+            row_factory=dict_row
+        ) as conn:
+
+            # Obtener el número total de terremotos
+            total_items = conn.execute("""
+                SELECT COUNT(*) AS total
+                FROM earthquakes
+            """).fetchone()["total"]
+
+            # Obtener únicamente los terremotos de la página solicitada
+            earthquakes = conn.execute("""
+                SELECT
+                    id,
+                    magnitude,
+                    place,
+                    event_time,
+                    latitude,
+                    longitude,
+                    depth
+                FROM earthquakes
+                ORDER BY event_time DESC, id DESC
+                LIMIT %s OFFSET %s
+            """, (page_size, offset)).fetchall()
+
+        total_pages = ceil(total_items / page_size)
+
+        return {
+            "items": earthquakes,
+            "pagination": {
+                "page": page,
+                "page_size": page_size,
+                "total_items": total_items,
+                "total_pages": total_pages,
+                "has_next": page < total_pages,
+                "has_previous": page > 1
+            }
+        }
+
+    except Exception:
         raise HTTPException(
-            status_code=400,
-            detail="Parámetros de paginación inválidos"
+            status_code=500,
+            detail="Error retrieving earthquakes"
         )
-
-    with psycopg.connect(
-        DATABASE_URL,
-        row_factory=dict_row
-    ) as conn:
-
-        rows = conn.execute("""
-            SELECT *
-            FROM earthquakes
-            ORDER BY event_time DESC
-            LIMIT %s OFFSET %s
-        """, (limit, offset)).fetchall()
-
-    return rows
 
 def check_historical_data():
 
