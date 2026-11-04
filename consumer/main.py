@@ -7,6 +7,7 @@ import os
 import asyncpg
 from aiokafka import AIOKafkaConsumer
 from fastapi import FastAPI
+import httpx
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("consumer")
@@ -74,8 +75,8 @@ async def init_database():
 
     logger.info("Base de datos inicializada correctamente")
 
-
 async def save_earthquake(event):
+
     properties = event["properties"]
     coordinates = event["geometry"]["coordinates"]
 
@@ -85,13 +86,15 @@ async def save_earthquake(event):
         raise ValueError("El terremoto no tiene identificador")
 
     async with db_pool.acquire() as conn:
-        await conn.execute("""
+
+        result = await conn.fetchval("""
             INSERT INTO earthquakes (
                 id, magnitude, place, event_time,
                 longitude, latitude, depth
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7)
             ON CONFLICT (id) DO NOTHING
+            RETURNING id
         """,
             earthquake_id,
             properties["mag"],
@@ -104,6 +107,38 @@ async def save_earthquake(event):
             coordinates[1],
             coordinates[2] if len(coordinates) > 2 else None
         )
+
+        return result is not None
+
+# async def save_earthquake(event):
+#     properties = event["properties"]
+#     coordinates = event["geometry"]["coordinates"]
+
+#     earthquake_id = event.get("id")
+
+#     if not earthquake_id:
+#         raise ValueError("El terremoto no tiene identificador")
+
+#     async with db_pool.acquire() as conn:
+#         await conn.execute("""
+#             INSERT INTO earthquakes (
+#                 id, magnitude, place, event_time,
+#                 longitude, latitude, depth
+#             )
+#             VALUES ($1, $2, $3, $4, $5, $6, $7)
+#             ON CONFLICT (id) DO NOTHING
+#         """,
+#             earthquake_id,
+#             properties["mag"],
+#             properties["place"],
+#             __import__("datetime").datetime.fromtimestamp(
+#                 properties["time"] / 1000,
+#                 tz=__import__("datetime").timezone.utc
+#             ),
+#             coordinates[0],
+#             coordinates[1],
+#             coordinates[2] if len(coordinates) > 2 else None
+#         )
 
 
 async def consume_earthquakes():
@@ -139,15 +174,34 @@ async def consume_earthquakes():
                         continue
 
                     properties = event["properties"]
+                    inserted = await save_earthquake(event)
 
-                    await save_earthquake(event)
+                    if inserted:
 
-                    logger.info(
-                        "Terremoto guardado | id=%s | magnitud=%s | lugar=%s",
-                        event.get("id"),
-                        properties["mag"],
-                        properties["place"],
-                    )
+                        logger.info(
+                            "Nuevo terremoto | id=%s | magnitud=%s | lugar=%s",
+                            event.get("id"),
+                            properties["mag"],
+                            properties["place"],
+                        )
+
+                        await notify_api(http_client)
+
+                    else:
+
+                        logger.info(
+                            "Terremoto duplicado ignorado: %s",
+                            event.get("id")
+                        )
+
+                    # await save_earthquake(event)
+
+                    # logger.info(
+                    #     "Terremoto guardado | id=%s | magnitud=%s | lugar=%s",
+                    #     event.get("id"),
+                    #     properties["mag"],
+                    #     properties["place"],
+                    # )
 
                 except (json.JSONDecodeError, UnicodeDecodeError, TypeError):
                     logger.exception("Mensaje que no contiene JSON válido")
@@ -171,17 +225,46 @@ async def consume_earthquakes():
                 consumer = None
 
 
+http_client = None
+
+
 @app.on_event("startup")
 async def startup():
-    global task
+    global task, http_client
 
     await init_database()
+
+    http_client = httpx.AsyncClient(timeout=5)
+
     task = asyncio.create_task(consume_earthquakes())
 
+# @app.on_event("startup")
+# async def startup():
+#     global task
 
+#     await init_database()
+#     task = asyncio.create_task(consume_earthquakes())
+
+
+# @app.on_event("shutdown")
+# async def shutdown():
+#     global db_pool
+
+#     if task:
+#         task.cancel()
+#         try:
+#             await task
+#         except asyncio.CancelledError:
+#             pass
+
+#     if consumer is not None:
+#         await consumer.stop()
+
+#     if db_pool is not None:
+#         await db_pool.close()
 @app.on_event("shutdown")
 async def shutdown():
-    global db_pool
+    global db_pool, http_client
 
     if task:
         task.cancel()
@@ -196,6 +279,8 @@ async def shutdown():
     if db_pool is not None:
         await db_pool.close()
 
+    if http_client is not None:
+        await http_client.aclose()
 
 @app.get("/health")
 async def health():
@@ -205,3 +290,22 @@ async def health():
         "database_connected": db_pool is not None,
         "topic": KAFKA_TOPIC,
     }
+
+async def notify_api(http_client):
+
+    try:
+
+        response = await http_client.post(
+            API_NOTIFY_URL,
+            headers={
+                "X-Internal-Token": INTERNAL_API_TOKEN
+            }
+        )
+
+        response.raise_for_status()
+
+        logger.info("API notificada correctamente")
+
+    except httpx.HTTPError:
+
+        logger.exception("Error notificando a la API")

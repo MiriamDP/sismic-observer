@@ -2,3 +2,4 @@ aiokafka
 fastapi
 uvicorn[standard]
 asyncpg
+httpx

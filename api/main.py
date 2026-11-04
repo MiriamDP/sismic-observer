@@ -11,8 +11,41 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import psycopg
 from psycopg.rows import dict_row
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, WebSocket, WebSocketDisconnect, Header
 from pydantic import BaseModel, Field
+import secrets
+
+INTERNAL_API_TOKEN = os.getenv("INTERNAL_API_TOKEN")
+
+class ConnectionManager:
+
+    def __init__(self):
+        self.active_connections = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+
+        disconnected = []
+
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+
+            except Exception:
+                disconnected.append(connection)
+
+        for connection in disconnected:
+            self.disconnect(connection)
+
+
+manager = ConnectionManager()
 
 app = FastAPI(title="Sismic Observer API")
 
@@ -745,3 +778,83 @@ def automatic_historical_import():
             return
 
     logger.info("Importación histórica automática finalizada")
+
+def get_latest_earthquakes():
+
+    with psycopg.connect(
+        DATABASE_URL,
+        row_factory=dict_row
+    ) as conn:
+
+        earthquakes = conn.execute("""
+            SELECT
+                id,
+                magnitude,
+                place,
+                event_time,
+                latitude,
+                longitude,
+                depth
+            FROM earthquakes
+            ORDER BY event_time DESC, id DESC
+            LIMIT 20
+        """).fetchall()
+
+    return [
+        {
+            **event,
+            "event_time": event["event_time"].isoformat()
+        }
+        for event in earthquakes
+    ]
+
+@app.post("/internal/earthquakes/notify")
+async def notify_new_earthquakes(
+    token: str = Header(alias="X-Internal-Token")
+):
+
+    if not INTERNAL_API_TOKEN or not secrets.compare_digest(
+        token,
+        INTERNAL_API_TOKEN
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized"
+        )
+
+    earthquakes = await asyncio.to_thread(
+        get_latest_earthquakes
+    )
+
+    await manager.broadcast({
+        "type": "earthquakes_update",
+        "items": earthquakes
+    })
+
+    return {
+        "status": "notified",
+        "count": len(earthquakes)
+    }
+
+@app.websocket("/ws/earthquakes")
+async def earthquakes_websocket(websocket: WebSocket):
+
+    await manager.connect(websocket)
+
+    try:
+
+        # Enviar los últimos 20 al conectarse
+        earthquakes = await asyncio.to_thread(
+            get_latest_earthquakes
+        )
+
+        await websocket.send_json({
+            "type": "earthquakes_update",
+            "items": earthquakes
+        })
+
+        while True:
+            await websocket.receive_text()
+
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)

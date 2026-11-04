@@ -92,6 +92,8 @@ services:
       KAFKA_TOPIC: earthquakes
       KAFKA_GROUP: earthquake-processor
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      API_NOTIFY_URL: http://api:8000/internal/earthquakes/notify
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
     depends_on: #depende tanto de kafka como de la base de datos ya que si esta no esta disponible no tiene donde volcar los datos
       kafka:
         condition: service_healthy
@@ -118,6 +120,7 @@ services:
       HISTORICAL_IMPORT_ENABLED: "true"
       HISTORICAL_IMPORT_START_DATE: "2000-01-01" #puede tardar hasta 15min
       HISTORICAL_IMPORT_MIN_MAGNITUDE: ""
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
