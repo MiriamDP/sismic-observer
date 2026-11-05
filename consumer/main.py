@@ -16,6 +16,8 @@ KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "kafka:19092")
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "earthquakes")
 KAFKA_GROUP = os.getenv("KAFKA_GROUP", "earthquake-processor")
 DATABASE_URL = os.getenv("DATABASE_URL")
+API_NOTIFY_URL = os.getenv("API_NOTIFY_URL")
+INTERNAL_API_TOKEN = os.getenv("INTERNAL_API_TOKEN")
 
 app = FastAPI(title="Earthquake Consumer")
 
@@ -290,8 +292,15 @@ async def health():
         "database_connected": db_pool is not None,
         "topic": KAFKA_TOPIC,
     }
-
 async def notify_api(http_client):
+
+    if not API_NOTIFY_URL:
+        logger.error("API_NOTIFY_URL no está configurada")
+        return
+
+    if not INTERNAL_API_TOKEN:
+        logger.error("INTERNAL_API_TOKEN no está configurado")
+        return
 
     try:
 
