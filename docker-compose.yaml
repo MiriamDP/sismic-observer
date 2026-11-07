@@ -38,7 +38,7 @@ services:
       KAFKA_LOG_RETENTION_HOURS: 168 # guardamos durante 7 dias los mensajes en kafka
       KAFKA_LOG_RETENTION_BYTES: -1 # sin limite de tamaño de los mensajes
     volumes:
-      - kafka_data: /var/lib/kafka/data
+      - kafka_data:/var/lib/kafka/data
     healthcheck:
       test:
         [
