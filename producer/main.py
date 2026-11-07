@@ -131,6 +131,10 @@ async def lifespan(app: FastAPI):
             }
         )
 
+        # para que la api pueda acceder a ellos
+        app.state.pool = pool
+        app.state.kafka = kafka
+
         # Iniciar tarea periódica
         producer_task = asyncio.create_task(
             producer_loop(pool,kafka,http_client)

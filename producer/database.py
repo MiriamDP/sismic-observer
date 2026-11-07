@@ -153,7 +153,7 @@ async def mark_published(pool, event_id, updated_ms, payload_hash):
 
 async def save_exclusion(pool, event_id, reason, raw_extraction_id, original_event):
     '''Resgistra las anomalias, no todos los eventos que publica usgs son terremotos.
-    Registra los eventos que no son terremotos'''
+    Registra los eventos que no son terremotos. Si el evento ya esta excluido no vuelve a añadirlo'''
     async with pool.acquire() as connection:
         await connection.execute(
             """
