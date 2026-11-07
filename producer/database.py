@@ -150,3 +150,27 @@ async def mark_published(pool, event_id, updated_ms, payload_hash):
             updated_ms, payload_hash,
             datetime.now(timezone.utc)
         )
+
+async def save_exclusion(pool, event_id, reason, raw_extraction_id, original_event):
+    '''Resgistra las anomalias, no todos los eventos que publica usgs son terremotos.
+    Registra los eventos que no son terremotos'''
+    async with pool.acquire() as connection:
+        await connection.execute(
+            """
+            INSERT INTO producer_event_exclusions (
+                event_id,
+                mode,
+                reason,
+                raw_extraction_id,
+                original_event
+            )
+            VALUES ($1, $2, $3, $4, $5::jsonb)
+            ON CONFLICT (event_id, mode, reason)
+            WHERE event_id IS NOT NULL
+            DO NOTHING;
+            """,
+            event_id, settings.MODE, reason,
+            raw_extraction_id,
+            json.dumps(original_event, ensure_ascii=False)
+            if original_event is not None else None
+        )

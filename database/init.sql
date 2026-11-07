@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS raw_extractions (
     size_bytes BIGINT NOT NULL
 );
 
-/*Registro de cada consulta, incluso si la respuesta es igual a la anterior*/
+/*Registro de cada consulta, inlcuos si la respuesta es igual a la anterior*/
 CREATE TABLE IF NOT EXISTS ingestion_runs (
     id BIGSERIAL PRIMARY KEY,
     raw_extraction_id BIGINT REFERENCES raw_extractions(id),
@@ -40,3 +40,25 @@ CREATE TABLE IF NOT EXISTS producer_event_state (
 CREATE INDEX idx_producer_state_published
 ON producer_event_state(last_published_at DESC);
 
+/*Tabla de anomalias en caso de una publicacion falle*/
+CREATE TABLE IF NOT EXISTS producer_event_exclusions (
+    id BIGSERIAL PRIMARY KEY,
+    event_id VARCHAR(100),
+    mode VARCHAR(20) NOT NULL,
+    reason TEXT NOT NULL,
+    raw_extraction_id BIGINT REFERENCES raw_extractions(id),
+    original_event JSONB,
+    excluded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_producer_exclusions_event
+ON producer_event_exclusions(event_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS
+idx_producer_exclusions_unique
+ON producer_event_exclusions (
+    event_id,
+    mode,
+    reason
+)
+WHERE event_id IS NOT NULL;
