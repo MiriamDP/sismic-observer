@@ -34,7 +34,11 @@ services:
       KAFKA_NUM_PARTITIONS: 3 # numero de particiones de cada nuevo topic si no se indica lo contrario
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true" # permite la creacion de topics sin necesidad de crearlos manualmente
 
-      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs # donde se guardan los logs
+      KAFKA_LOG_DIRS: /var/lib/kafka/data # donde se guardan los logs
+      KAFKA_LOG_RETENTION_HOURS: 168 # guardamos durante 7 dias los mensajes en kafka
+      KAFKA_LOG_RETENTION_BYTES: -1 # sin limite de tamaño de los mensajes
+    volumes:
+      - kafka_data: /var/lib/kafka/data
     healthcheck:
       test:
         [
@@ -54,6 +58,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
@@ -61,6 +66,8 @@ services:
       timeout: 3s
       retries: 12
       start_period: 10s
+    ports:
+      - "5432:5432"
 
   producer:
     # enviara los mensajes a kafka desde el puerto 19092
@@ -68,8 +75,17 @@ services:
     environment:
       KAFKA_BOOTSTRAP: kafka:19092
       KAFKA_TOPIC: earthquakes # nombre del topic al que enviara
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      USGS_URL: https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson
+      POLL_INTERVAL: 60
+      SOURCE: USGS
+      MODE: live
+      HTTP_TIMEOUT: 30
+      MAX_RETRIES: 5
     depends_on:
       kafka: # servicio del que depende
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     restart: unless-stopped # docker intentara reiniciarlo si termina inesperadamente, no se reinicia a no ser que lo paremos nosotros explicitamente
     healthcheck: # comprueba un endpoint especifico del productor
@@ -84,7 +100,8 @@ services:
       timeout: 3s
       retries: 12
       start_period: 10s
-
+    ports:
+      - 8082:8082
   consumer:
     build: ./consumer
     environment:
@@ -118,7 +135,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       HISTORICAL_IMPORT_ENABLED: "true"
-      HISTORICAL_IMPORT_START_DATE: "2000-01-01" #puede tardar hasta 15min
+      HISTORICAL_IMPORT_START_DATE: "2025-01-01" #puede tardar hasta 15min
       HISTORICAL_IMPORT_MIN_MAGNITUDE: ""
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
     ports:
@@ -156,3 +173,4 @@ services:
 
 volumes:
   postgres_data:
+  kafka_data:
