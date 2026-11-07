@@ -111,6 +111,7 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       API_NOTIFY_URL: http://api:8000/internal/earthquakes/notify
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
+      GEOJSON_PATH: /app/data/paises.geojson
     depends_on: #depende tanto de kafka como de la base de datos ya que si esta no esta disponible no tiene donde volcar los datos
       kafka:
         condition: service_healthy
@@ -129,6 +130,10 @@ services:
       timeout: 3s
       retries: 12
       start_period: 10s
+    ports:
+      - 8081:8081
+    volumes:
+      - ../sismic-panel/public/datos/paises.geojson:/app/data/paises.geojson:ro
 
   api:
     build: ./api
