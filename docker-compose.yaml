@@ -96,7 +96,8 @@ services:
       timeout: 3s
       retries: 12
       start_period: 10s
-
+    ports:
+      - 8082:8082
   consumer:
     build: ./consumer
     environment:

@@ -1,115 +1,167 @@
+
 import asyncio
-import json
 import logging
-import os
+
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 import httpx
-from aiokafka import AIOKafkaProducer
+
+from config import settings
+from database import create_pool
+from kafka_client import KafkaClient
+from extraction import process_extraction
 from fastapi import FastAPI
+from api import create_app
 
-logging.basicConfig(level=logging.INFO) #registra mensaje de nivel info y superiores
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+)
+
 logger = logging.getLogger("producer")
-# para comprobar que el producer funciona correctamente
 
-KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "kafka:19092")
-KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "earthquakes")
+class ProducerState:
+    '''Clase que almacena el estado interno del productor'''
 
-# url de la api de terremotos
-USGS_URL = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.geojson"
-
-
-# crea la aplicación del producer y sus variables de entorno
-app = FastAPI(title="Earthquake Producer")
-
-producer = None # instancia del cliente producer de kafka
-task = None #tarea asincrona que jecuta el proceso de publicacion
-running = False # ultimo ciclo de consulta y publicacion termino sin lanzar excepcion
-sent_ids = set() #guarda identificadores de terremotos que ya se han enviado durante la ejecucion
+    def __init__(self):
+        self.running = False
+        self.last_attempt = None
+        self.last_success = None
+        self.last_error = None
+        self.last_result = None
+        self.consecutive_errors = 0
 
 
-async def publish_earthquakes():
-    """Se conecta a kafka si todavia no hay conexion, consulta la api de USGS, 
-    recorre los terremotos recibidos, filtra los ya publicados y envia cada evento a kafka
-    Espera 1 minuto antes de volver a consultar la api"""
-    global producer, running
+state = ProducerState()
+
+async def producer_loop(pool, kafka, http_client):
+    '''Ciclo de extracción de datos'''
+
+    logger.info("Iniciando extracción periódica de USGS")
+
+    state.running = True
 
     while True:
+
+        cycle_start = asyncio.get_running_loop().time() # medir cuanto dura el ciclo
+
+        state.last_attempt = datetime.now(timezone.utc)
+
         try:
-            if producer is None:
-                producer = AIOKafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP)
-                await producer.start()
-                logger.info("Conectado a Kafka")
 
-            # consulta la api de usgs
-            async with httpx.AsyncClient(timeout=20) as client: #crea cliente http asincrono que se cierra tras 20s
-                response = await client.get(USGS_URL)
-                response.raise_for_status()
-                data = response.json()
+            result = await process_extraction(
+                pool,
+                kafka,
+                http_client
+            )
 
-            for feature in data.get("features", []):
-                event_id = feature.get("id")
+            state.last_result = result
 
-                if not event_id or event_id in sent_ids: #ignora los que ya estan en la lista o vienen sin id
-                    continue
+            if result["failed"] > 0:
 
-                message = json.dumps(feature).encode("utf-8")
-
-                await producer.send_and_wait( #publica el terremoto
-                    KAFKA_TOPIC,
-                    value=message,
-                    key=event_id.encode("utf-8"),
+                state.last_error = (
+                    f"Extracción parcial: "
+                    f"{result['failed']} eventos no publicados"
                 )
 
-                sent_ids.add(event_id)
-                logger.info(
-                    "Terremoto publicado: %s",
-                    event_id,
-                )
+                state.consecutive_errors += 1
 
-            running = True
+                logger.warning(state.last_error)
+
+            else:
+
+                state.last_success = datetime.now(timezone.utc)
+                state.last_error = None
+                state.consecutive_errors = 0
+
+            logger.info("Resultado del ciclo: %s", result)
 
         except asyncio.CancelledError:
             raise
 
-        except Exception:
-            running = False
-            logger.exception("Error consultando USGS o publicando en Kafka")
+        except Exception as exc:
 
-            if producer is not None:
-                try:
-                    await producer.stop()
-                except Exception:
-                    pass
-                producer = None
+            state.last_error = str(exc)
+            state.consecutive_errors += 1
 
-            # TODO: establecer politica de reintentos incrementales
+            logger.exception("Error durante la extracción")
 
-        await asyncio.sleep(60) # para el ciclo infinito durante 60s antes de empezar otra vez
+        # Duracion ciclo de extraccion
+        elapsed = (asyncio.get_running_loop().time() - cycle_start)
 
+        # como se dan retrasos con la peticion a usgs asi no esperamos 
+        # 60s completos desde que acaba el ciclo, sino el tiempo que queda para el siguiente
+        remaining = max(0,settings.POLL_INTERVAL - elapsed)
 
-@app.on_event("startup")
-async def startup():
-    global task
-    task = asyncio.create_task(publish_earthquakes())
+        await asyncio.sleep(remaining)
 
 
-@app.on_event("shutdown")
-async def shutdown():
-    if task:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+@asynccontextmanager
+async def lifespan(app: FastAPI):
 
-    if producer is not None:
-        await producer.stop()
+    logger.info("Iniciando productor")
 
+    pool = None
+    kafka = None
+    http_client = None
+    producer_task = None
 
-@app.get("/health")
-async def health():
-    return {
-        "status": "ok",
-        "kafka_configured": bool(KAFKA_BOOTSTRAP),
-        "topic": KAFKA_TOPIC,
-    }
+    try:
+
+        # PostgreSQL
+        pool = await create_pool()
+
+        await pool.fetchval("SELECT 1")
+
+        logger.info("PostgreSQL conectado")
+
+        # Kafka
+        kafka = KafkaClient()
+
+        await kafka.start()
+
+        logger.info("Kafka conectado")
+
+        # Cliente HTTP
+        http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(settings.HTTP_TIMEOUT),
+            headers={
+                "User-Agent": "SismicObserver/1.0"
+            }
+        )
+
+        # Iniciar tarea periódica
+        producer_task = asyncio.create_task(
+            producer_loop(pool,kafka,http_client)
+        )
+
+        yield
+
+    finally:
+
+        logger.info("Cerrando productor")
+
+        if producer_task:
+
+            producer_task.cancel()
+
+            try:
+                await producer_task
+            except asyncio.CancelledError:
+                pass
+
+        if http_client:
+            await http_client.aclose()
+
+        if kafka:
+            await kafka.stop()
+
+        if pool:
+            await pool.close()
+
+        state.running = False
+
+        logger.info("Productor detenido")
+
+app = create_app(lifespan,state)
