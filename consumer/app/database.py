@@ -156,3 +156,86 @@ class Database:
             event["country_code"]
         )
 
+
+    async def save_countries(self, countries):
+        '''Almacena el catálogo de países y sus datos geográficos'''
+
+        async with self.pool.acquire() as connection:
+
+            async with connection.transaction():
+
+                await connection.executemany(
+                    """
+                    INSERT INTO countries (
+                        adm0_a3,
+                        name_es,
+                        admin,
+                        continent,
+                        subregion
+                    )
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    [
+                        (
+                            country["adm0_a3"],
+                            country["name_es"],
+                            country["admin"],
+                            country["continent"],
+                            country["subregion"]
+                        )
+                        for country in countries
+                    ]
+                )
+
+        logger.info(
+            "Catálogo geográfico persistido: %s entidades",
+            len(countries)
+        )
+
+
+    async def backfill_country_codes(self, geography):
+        '''Asigna a eventos ya guardados el código de pais correspondiente si no lo tienen'''
+
+        async with self.pool.acquire() as connection:
+
+            events = await connection.fetch(
+                """
+                SELECT event_id, mode, longitude, latitude
+                FROM earthquakes
+                """
+            )
+
+            updated = 0
+            without_country = 0
+
+            async with connection.transaction():
+
+                for event in events:
+
+                    country_code = geography.find_country(
+                        event["longitude"],
+                        event["latitude"]
+                    )
+
+                    await connection.execute(
+                        """
+                        UPDATE earthquakes
+                        SET country_code = $3
+                        WHERE event_id = $1
+                        AND mode = $2
+                        """,
+                        event["event_id"], event["mode"], country_code
+                    )
+
+                    if country_code is None:
+                        without_country += 1
+                    else:
+                        updated += 1
+
+        logger.info(
+            "Enriquecimiento inicial terminado: "
+            "%s asignados, %s sin país",
+            updated,
+            without_country
+        )
