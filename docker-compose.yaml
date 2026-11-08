@@ -34,7 +34,11 @@ services:
       KAFKA_NUM_PARTITIONS: 3 # numero de particiones de cada nuevo topic si no se indica lo contrario
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true" # permite la creacion de topics sin necesidad de crearlos manualmente
 
-      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs # donde se guardan los logs
+      KAFKA_LOG_DIRS: /var/lib/kafka/data # donde se guardan los logs
+      KAFKA_LOG_RETENTION_HOURS: 168 # guardamos durante 7 dias los mensajes en kafka
+      KAFKA_LOG_RETENTION_BYTES: -1 # sin limite de tamaño de los mensajes
+    volumes:
+      - kafka_data:/var/lib/kafka/data
     healthcheck:
       test:
         [
@@ -107,6 +111,7 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       API_NOTIFY_URL: http://api:8000/internal/earthquakes/notify
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
+      GEOJSON_PATH: /app/data/paises.geojson
     depends_on: #depende tanto de kafka como de la base de datos ya que si esta no esta disponible no tiene donde volcar los datos
       kafka:
         condition: service_healthy
@@ -125,6 +130,10 @@ services:
       timeout: 3s
       retries: 12
       start_period: 10s
+    ports:
+      - 8081:8081
+    volumes:
+      - ../sismic-panel/public/datos/paises.geojson:/app/data/paises.geojson:ro
 
   api:
     build: ./api
@@ -169,3 +178,4 @@ services:
 
 volumes:
   postgres_data:
+  kafka_data:
