@@ -143,10 +143,14 @@ services:
       HISTORICAL_IMPORT_START_DATE: "2025-01-01" #puede tardar hasta 15min
       HISTORICAL_IMPORT_MIN_MAGNITUDE: ""
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
+      KAFKA_BOOTSTRAP: kafka:19092
+      KAFKA_TOPIC: earthquakes
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
+        condition: service_healthy
+      kafka:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:

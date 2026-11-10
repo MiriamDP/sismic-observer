@@ -2,7 +2,7 @@
 import json
 import logging
 import asyncpg
-from config import settings
+from app.config import settings
 
 logger = logging.getLogger("consumer.database")
 
@@ -238,4 +238,18 @@ class Database:
             "%s asignados, %s sin país",
             updated,
             without_country
+        )
+
+
+    async def notify_new_event(self, event):
+
+        payload = json.dumps(
+            event,
+            default=str
+        )
+
+        await self.pool.execute(
+            "SELECT pg_notify($1, $2)",
+            "new_earthquake",
+            payload
         )

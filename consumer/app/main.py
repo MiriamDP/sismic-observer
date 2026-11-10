@@ -87,10 +87,17 @@ async def consume_messages(app,geography):
 
                 logger.info("Evento %s: %s", event["event_id"], result)
 
-                # 6. Confirmar offset después de persistir
+                # 6. Notificar a la API
+                mode = data.get("mode")
+                if mode == "live":
+
+                    await database.notify_new_event(event)
+
+                # 7. Confirmar offset
                 await consumer.commit({
                     TopicPartition(message.topic, message.partition): OffsetAndMetadata(
-                        message.offset + 1, "")
+                        message.offset + 1, ""
+                    )
                 })
 
             except (ValidationError, json.JSONDecodeError) as exc:
