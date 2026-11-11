@@ -369,6 +369,11 @@ class ImportService:
         """Obtiene el estado de la última importación."""
 
         return await self.repository.get_latest_job()
+    
+    async def get_all_import_jobs(self):
+        """Obtiene todas las importaciones históricas."""
+
+        return await self.repository.get_all_import_jobs()
 
 
 import_service = ImportService(

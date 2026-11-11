@@ -224,5 +224,18 @@ class ImportRepository:
 
         return dict(job) if job else None
 
+    async def get_all_import_jobs(self):
+        """Devuelve todas las importaciones históricas registradas."""
+
+        async with self.db.pool.acquire() as connection:
+
+            jobs = await connection.fetch("""
+                SELECT *
+                FROM earthquake_import_jobs
+                ORDER BY id DESC
+            """)
+
+        return [dict(job) for job in jobs]
+
 
 import_repository = ImportRepository()

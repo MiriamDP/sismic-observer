@@ -14,7 +14,8 @@ class EarthquakeRepository:
         self.db = db
 
 
-    def _build_filters(self, mode, start_date, end_date, min_magnitude, max_magnitude, country_code):
+    def _build_filters(self, mode, start_date, end_date, min_magnitude, max_magnitude,min_depth,
+    max_depth, country_code):
         """Construye las condiciones SQL y sus parámetros."""
 
         conditions = []
@@ -40,6 +41,14 @@ class EarthquakeRepository:
             params.append(max_magnitude)
             conditions.append(f"e.magnitude <= ${len(params)}")
 
+        if min_depth is not None:
+            params.append(min_depth)
+            conditions.append(f"e.depth_km >= ${len(params)}")
+
+        if max_depth is not None:
+            params.append(max_depth)
+            conditions.append(f"e.depth_km <= ${len(params)}")
+
         if country_code == "unassigned":
             conditions.append("e.country_code IS NULL")
 
@@ -59,7 +68,8 @@ class EarthquakeRepository:
     # --------------------------------------------------
 
     async def get_earthquakes(self, page=1, page_size=20, mode="all", start_date=None, end_date=None, 
-        min_magnitude=None, max_magnitude=None, country_code=None):
+        min_magnitude=None, max_magnitude=None,min_depth=None,
+    max_depth=None,country_code=None):
         """Consulta terremotos aplicando filtros y paginación."""
 
         if page < 1:
@@ -76,6 +86,8 @@ class EarthquakeRepository:
             end_date,
             min_magnitude,
             max_magnitude,
+            min_depth,
+            max_depth,
             country_code
         )
 
@@ -132,6 +144,47 @@ class EarthquakeRepository:
             "items": [dict(event) for event in events],
             "total_items": total
         }
+
+    async def get_earthquake(self,id):
+            """Obtiene un terremoto según su id"""
+    
+            async with self.db.pool.acquire() as connection:
+    
+                async with connection.transaction(
+                    readonly=True,
+                    isolation="repeatable_read"
+                ):
+    
+                    earthquake = await connection.fetchrow(
+                        f"""
+                        SELECT
+                            e.event_id,
+                            e.mode,
+                            e.source,
+                            e.magnitude,
+                            e.magnitude_type,
+                            e.event_type,
+                            e.place,
+                            e.longitude,
+                            e.latitude,
+                            e.depth_km,
+                            e.event_time,
+                            e.updated,
+                            e.country_code,
+                            COALESCE(c.name_es, 'Sin país asignado')
+                                AS country_name,
+                            c.continent,
+                            c.subregion
+                        FROM earthquakes e
+                        LEFT JOIN countries c
+                            ON c.adm0_a3 = e.country_code
+                        WHERE e.event_id = $1
+                        """,
+                        id
+                    )
+
+            return dict(earthquake) if earthquake else None
+    
 
 
     async def get_latest_earthquakes(self, limit=20):

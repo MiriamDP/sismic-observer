@@ -45,6 +45,10 @@ class EarthquakeService:
             }
         }
 
+    async def get_earthquake(self,id):
+        result = await earthquake_repository.get_earthquake(id)
+        return result if result else None
+
 
     @staticmethod
     def _build_pagination(page, page_size, total):

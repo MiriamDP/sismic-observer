@@ -5,7 +5,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query
 
-from models.earthquake_models import EarthquakeListResponse
+from models.earthquake_models import EarthquakeListResponse, EarthquakeResponse
 from services.earthquake_service import earthquake_service
 
 
@@ -31,6 +31,8 @@ async def get_earthquakes(
     end_date: datetime | None = None,
     min_magnitude: float | None = None,
     max_magnitude: float | None = None,
+    min_depth: float | None = None,
+    max_depth: float | None = None,
     country_code: str | None = None
 ):
     """Consulta terremotos con filtros y paginación."""
@@ -55,6 +57,16 @@ async def get_earthquakes(
             status_code=400,
             detail="La magnitud mínima no puede superar la máxima"
         )
+    
+    if (
+        min_depth is not None
+        and max_depth is not None
+        and min_depth > max_depth
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="La profundidad mínima no puede superar la máxima"
+        )
 
 
     try:
@@ -67,6 +79,8 @@ async def get_earthquakes(
             end_date=end_date,
             min_magnitude=min_magnitude,
             max_magnitude=max_magnitude,
+            min_depth=min_depth,
+            max_depth=max_depth,
             country_code=country_code
         )
 
@@ -80,3 +94,21 @@ async def get_earthquakes(
             status_code=500,
             detail="Error retrieving earthquakes"
         )
+
+@router.get("/latest",response_model=list[EarthquakeResponse])
+async def get_latest(
+    limit: int = 3,
+):
+    return await earthquake_service.get_latest_earthquakes(limit=limit)
+
+@router.get("/{earthquake_id}")
+async def get_earthquake(earthquake_id):
+    earthquake = await earthquake_service.get_earthquake(earthquake_id)
+
+    if earthquake is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Terremoto no encontrado"
+        )
+
+    return earthquake

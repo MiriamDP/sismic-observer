@@ -11,7 +11,7 @@ logger = logging.getLogger("api")
 
 
 router = APIRouter(
-    prefix="/earthquakes/import-history",
+    prefix="/api/earthquakes/import-history",
     tags=["Historical Imports"]
 )
 
@@ -80,4 +80,22 @@ async def import_status():
         raise HTTPException(
             status_code=500,
             detail="Error retrieving import status"
+        )
+
+
+@router.get("/jobs")
+async def get_all_import_jobs():
+    """Devuelve todas las importaciones históricas."""
+
+    try:
+        return await import_service.get_all_import_jobs()
+
+    except Exception:
+        logger.exception(
+            "Error obteniendo las importaciones históricas"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail="Error obteniendo las importaciones históricas"
         )
