@@ -69,18 +69,34 @@ class ImportService:
             return first_published + second_published
 
         # Publicar eventos en Kafka.
-        
+
         async def update_progress(count):
             await self.repository.increment_published_events(
                 job_id,
                 count
             )
 
-        published = await self.replay_publisher.publish_many(
-            features,
-            on_progress=update_progress,
-            batch_size=100
-        )
+        try:
+
+            published = await self.replay_publisher.publish_many(
+                features,
+                on_progress=update_progress,
+                batch_size=100
+            )
+
+        except KafkaPublishError as exc:
+
+            logger.error(
+                "Publicación parcial del intervalo: "
+                "job=%s | confirmados=%s",
+                job_id,
+                exc.published
+            )
+
+            # El progreso ya se actualiza mediante on_progress
+            # para los bloques confirmados.
+
+            raise
 
         logger.info(
             "Intervalo publicado: %s - %s | recibidos=%s | publicados=%s",
@@ -91,34 +107,50 @@ class ImportService:
         )
 
         return published
-
     # --------------------------------------------------
     # EJECUTAR IMPORTACIÓN HISTÓRICA
     # --------------------------------------------------
 
+    
     async def run_import(self, job_id, start_date, end_date, min_magnitude):
-        """Ejecuta una importación histórica completa."""
+        """Ejecuta o reanuda una importación histórica."""
 
         try:
 
-            await self.repository.update_job(
-                job_id,
-                status="running",
-                started_at=datetime.now(timezone.utc),
-                error=None
-            )
+            job = await self.repository.get_job(job_id)
 
-            start = datetime.combine(
-                start_date,
-                time.min,
-                tzinfo=timezone.utc
-            )
+            if job is None:
+                raise ValueError(
+                    f"No existe la importación {job_id}"
+                )
+
+            # Determinar desde dónde continuar.
+            if job["current_interval_start"] is not None:
+
+                start = job["current_interval_start"]
+
+            elif job["last_completed_interval"] is not None:
+
+                start = datetime.combine(
+                    job["last_completed_interval"] + timedelta(days=1),
+                    time.min,
+                    tzinfo=timezone.utc
+                )
+
+            else:
+
+                start = datetime.combine(
+                    start_date,
+                    time.min,
+                    tzinfo=timezone.utc
+                )
 
             end = datetime.combine(
                 end_date + timedelta(days=1),
                 time.min,
                 tzinfo=timezone.utc
             ) - timedelta(milliseconds=1)
+
 
             current = start
 
@@ -161,7 +193,6 @@ class ImportService:
 
                 current = interval_end + timedelta(milliseconds=1)
 
-            # Finalizar importación.
             await self.repository.update_job(
                 job_id,
                 status="completed",
@@ -183,7 +214,6 @@ class ImportService:
             )
 
             try:
-
                 await self.repository.update_job(
                     job_id,
                     status="interrupted",
@@ -191,11 +221,8 @@ class ImportService:
                 )
 
             except Exception:
-
                 logger.exception(
-                    "No se pudo actualizar el estado de la "
-                    "importación interrumpida: job=%s",
-                    job_id
+                    "No se pudo actualizar la importación interrumpida"
                 )
 
             raise
@@ -208,7 +235,6 @@ class ImportService:
             )
 
             try:
-
                 await self.repository.update_job(
                     job_id,
                     status="failed",
@@ -217,14 +243,12 @@ class ImportService:
                 )
 
             except Exception:
-
                 logger.exception(
-                    "No se pudo actualizar el estado de la "
-                    "importación fallida: job=%s",
-                    job_id
+                    "No se pudo actualizar la importación fallida"
                 )
 
             raise
+
 
 
     async def automatic_historical_import(self):
@@ -236,6 +260,20 @@ class ImportService:
 
         # El productor live se encarga del día actual.
         end_date = datetime.now(timezone.utc).date() - timedelta(days=1)
+
+        try:
+            self.validate_import_dates(
+                start_date,
+                end_date
+            )
+
+        except ValueError:
+
+            logger.exception(
+                "Fechas inválidas para la importación automática"
+            )
+
+            return
 
         min_magnitude = (
             float(settings.HISTORICAL_IMPORT_MIN_MAGNITUDE)
@@ -282,7 +320,7 @@ class ImportService:
 
             try:
 
-                job_id = await self.start_import(
+                job_id, task = await self.start_import(
                     missing_start,
                     missing_end,
                     min_magnitude
@@ -298,12 +336,7 @@ class ImportService:
 
             try:
 
-                await self.run_import(
-                    job_id,
-                    missing_start,
-                    missing_end,
-                    min_magnitude
-                )
+                await task
 
             except asyncio.CancelledError:
 
@@ -327,15 +360,10 @@ class ImportService:
     async def start_import(self, start_date, end_date, min_magnitude):
         """Valida y programa una importación histórica."""
 
-        if start_date > end_date:
-            raise ValueError(
-                "La fecha inicial debe ser anterior a la final"
-            )
-
-        if end_date > date.today():
-            raise ValueError(
-                "La fecha final no puede estar en el futuro"
-            )
+        self.validate_import_dates(
+            start_date,
+            end_date
+        )
 
         job_id = await self.repository.create_import_job(
             start_date,
@@ -362,7 +390,7 @@ class ImportService:
             )
         )
 
-        return job_id
+        return job_id, task
 
 
     async def get_import_status(self):
@@ -374,6 +402,200 @@ class ImportService:
         """Obtiene todas las importaciones históricas."""
 
         return await self.repository.get_all_import_jobs()
+
+    def validate_import_dates(self, start_date, end_date):
+        """Valida las fechas de una importación histórica."""
+
+        today = datetime.now(timezone.utc).date()
+
+        if start_date > end_date:
+            raise ValueError(
+                "La fecha inicial no puede ser posterior a la fecha final"
+            )
+
+        if start_date > today:
+            raise ValueError(
+                "La fecha inicial no puede estar en el futuro"
+            )
+
+        if end_date > today:
+            raise ValueError(
+                "La fecha final no puede estar en el futuro"
+            )
+
+        if end_date == today:
+            raise ValueError(
+                "No se puede importar el día actual porque "
+                "el productor live ya se encarga de él"
+            )
+
+
+    async def shutdown(self):
+        """Cancela y espera todas las importaciones activas."""
+
+        tasks = list(self.active_tasks.values())
+
+        if not tasks:
+            logger.info("No hay importaciones activas que cancelar")
+            return
+
+        logger.info(
+            "Cancelando %s importaciones activas",
+            len(tasks)
+        )
+
+        # Primero solicitar la cancelación de todas.
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+
+        # Después esperar a que TODAS terminen.
+        results = await asyncio.gather(
+            *tasks,
+            return_exceptions=True
+        )
+
+        # Registrar posibles excepciones.
+        for result in results:
+            if isinstance(result, BaseException) and not isinstance(
+                result, asyncio.CancelledError
+            ):
+                logger.error(
+                    "Una importación terminó con error durante el apagado: %s",
+                    result
+                )
+
+        self.active_tasks.clear()
+
+        logger.info("Todas las importaciones activas han finalizado")
+
+
+        
+    async def recover_interrupted_imports(self):
+        """Recupera las importaciones históricas interrumpidas."""
+
+        jobs = await self.repository.get_interrupted_jobs()
+
+        logger.info(
+            "Importaciones interrumpidas encontradas: %s",
+            len(jobs)
+        )
+
+        for job in jobs:
+
+            job_id = job["id"]
+
+            start_date = job["start_date"]
+            end_date = job["end_date"]
+
+            last_completed = job["last_completed_interval"]
+
+            if last_completed is None:
+                resume_from = start_date
+
+            else:
+                resume_from = last_completed + timedelta(days=1)
+
+            if resume_from > end_date:
+
+                await self.repository.update_job(
+                    job_id,
+                    status="completed",
+                    finished_at=datetime.now(timezone.utc),
+                    current_interval_start=None,
+                    current_interval_end=None
+                )
+
+                continue
+
+            logger.info(
+                "Recuperando importación %s desde %s",
+                job_id,
+            )
+
+            task = asyncio.create_task(
+                self.run_import(
+                    job_id,
+                    start_date,
+                    end_date,
+                    job["min_magnitude"],
+                ),
+                name=f"historical_import_recovery_{job_id}"
+            )
+
+            self.active_tasks[job_id] = task
+
+            task.add_done_callback(
+                lambda completed_task, current_id=job_id:
+                    self.active_tasks.pop(current_id, None)
+            )
+
+ 
+    
+    
+    async def resume_recoverable_imports(self):
+        """Recupera importaciones interrumpidas, fallidas o abandonadas."""
+
+        jobs = await self.repository.get_recoverable_jobs()
+
+        if not jobs:
+            logger.info("No hay importaciones pendientes de recuperación")
+            return
+
+        logger.info(
+            "Importaciones recuperables encontradas: %s",
+            len(jobs)
+        )
+
+        for job in jobs:
+
+            job_id = job["id"]
+
+            if job_id in self.active_tasks:
+                continue
+
+            claimed = await self.repository.claim_recoverable_job(job_id)
+
+            if not claimed:
+                continue
+
+            logger.info(
+                "Recuperando importación: job=%s | estado anterior=%s",
+                job_id,
+                job["status"]
+            )
+
+            task = asyncio.create_task(
+                self.run_import(
+                    job_id,
+                    job["start_date"],
+                    job["end_date"],
+                    job["min_magnitude"]
+                ),
+                name=f"historical_import_recovery_{job_id}"
+            )
+
+            self.active_tasks[job_id] = task
+
+            def cleanup(completed_task, current_id=job_id):
+
+                self.active_tasks.pop(current_id, None)
+
+                if completed_task.cancelled():
+                    return
+
+                exception = completed_task.exception()
+
+                if exception is not None:
+                    logger.error(
+                        "Error recuperando importación %s: %s",
+                        current_id,
+                        exception
+                    )
+
+            task.add_done_callback(cleanup)
+
+
 
 
 import_service = ImportService(

@@ -237,5 +237,77 @@ class ImportRepository:
 
         return [dict(job) for job in jobs]
 
+    
+    async def get_interrupted_jobs(self):
+        """Obtiene las importaciones que quedaron interrumpidas."""
+
+        async with self.db.pool.acquire() as connection:
+
+            jobs = await connection.fetch("""
+                SELECT *
+                FROM earthquake_import_jobs
+                WHERE status = 'interrupted'
+                ORDER BY id ASC
+            """)
+
+        return [dict(job) for job in jobs]
+
+    
+    async def get_recoverable_jobs(self):
+        """Obtiene importaciones que necesitan recuperarse."""
+
+        async with self.db.pool.acquire() as connection:
+
+            jobs = await connection.fetch("""
+                SELECT *
+                FROM earthquake_import_jobs
+                WHERE status IN ('interrupted', 'running', 'failed')
+                ORDER BY id ASC
+            """)
+
+        return [dict(job) for job in jobs]
+
+    
+    async def claim_recoverable_job(self, job_id):
+        """
+        Reclama una importación recuperable de forma atómica.
+        """
+
+        async with self.db.pool.acquire() as connection:
+
+            result = await connection.fetchval("""
+                UPDATE earthquake_import_jobs
+                SET status = 'running',
+                    started_at = NOW(),
+                    finished_at = NULL,
+                    error = NULL
+                WHERE id = $1
+                AND status IN ('interrupted', 'running', 'failed')
+                RETURNING id
+            """, job_id)
+
+        return result is not None
+
+
+
+
+    async def get_job(self, job_id):
+        """Obtiene una importación por su identificador."""
+
+        async with self.db.pool.acquire() as connection:
+
+            job = await connection.fetchrow("""
+                SELECT *
+                FROM earthquake_import_jobs
+                WHERE id = $1
+            """, job_id)
+
+        return dict(job) if job else None
+
+
+    
+
+
+
 
 import_repository = ImportRepository()

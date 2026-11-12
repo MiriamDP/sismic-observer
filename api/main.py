@@ -79,6 +79,11 @@ async def lifespan(app: FastAPI):
             await replay_publisher.start()
 
             stack.push_async_callback(replay_publisher.stop)
+           # ------------------------------------------
+            # RECUPERAR IMPORTS 
+            # ------------------------------------------
+
+            await import_service.resume_recoverable_imports()
 
             # ------------------------------------------
             # REGISTRAR RECURSOS
@@ -115,17 +120,16 @@ async def lifespan(app: FastAPI):
 
                 yield
 
+            
             finally:
 
                 # --------------------------------------
-                # CANCELAR TAREA HISTÓRICA
+                # CANCELAR IMPORTACIÓN AUTOMÁTICA
                 # --------------------------------------
 
                 if historical_task and not historical_task.done():
 
-                    logger.info(
-                        "Cancelando importación histórica"
-                    )
+                    logger.info("Cancelando importación histórica automática")
 
                     historical_task.cancel()
 
@@ -133,23 +137,35 @@ async def lifespan(app: FastAPI):
                         await historical_task
 
                     except asyncio.CancelledError:
-                        pass
+                        logger.info("Importación automática cancelada")
 
                     except Exception:
                         logger.exception(
-                            "Error durante la importación histórica"
+                            "Error durante la importación automática"
                         )
 
-                logger.info(
-                    "Sismic Observer API detenida"
-                )
+                # --------------------------------------
+                # CANCELAR IMPORTACIONES ACTIVAS
+                # --------------------------------------
+
+                logger.info("Deteniendo importaciones activas")
+
+                await import_service.shutdown()
+
+                # --------------------------------------
+                # DETENER POSTGRESQL LISTENER
+                # --------------------------------------
+
+                logger.info("Deteniendo PostgreSQL listener")
+
                 listener_task.cancel()
 
-                try:
-                    await listener_task
+                await asyncio.gather(
+                    listener_task,
+                    return_exceptions=True
+                )
 
-                except asyncio.CancelledError:
-                    pass
+                logger.info("Sismic Observer API detenida")
 
         except Exception:
 

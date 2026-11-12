@@ -130,6 +130,9 @@ class KafkaReplayPublisher:
     ):
         """Publica eventos y notifica periódicamente del progreso."""
 
+        if batch_size<=0:
+            raise ValueError("batch_size debe ser mayor que cero")
+
         published = 0
 
         try:

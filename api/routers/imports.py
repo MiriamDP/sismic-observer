@@ -1,5 +1,6 @@
 
 import logging
+import asyncpg
 
 from fastapi import APIRouter, HTTPException
 
@@ -21,7 +22,7 @@ async def start_import(request: ImportRequest):
 
     try:
 
-        job_id = await import_service.start_import(
+        job_id, task = await import_service.start_import(
             request.start_date,
             request.end_date,
             request.min_magnitude
@@ -38,6 +39,13 @@ async def start_import(request: ImportRequest):
         raise HTTPException(
             status_code=400,
             detail=str(exc)
+        )
+
+    except asyncpg.UniqueViolationError:
+
+        raise HTTPException(
+            status_code=409,
+            detail="Ya existe una importación histórica en ejecución"
         )
 
     except Exception:

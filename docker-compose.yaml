@@ -4,8 +4,6 @@ services:
   kafka:
     image: apache/kafka:4.1.2
     hostname: kafka
-    ports:
-      - "9092:9092"
     environment:
 
       KAFKA_NODE_ID: 1
@@ -66,8 +64,6 @@ services:
       timeout: 3s
       retries: 12
       start_period: 10s
-    ports:
-      - "5432:5432"
 
   producer:
     # enviara los mensajes a kafka desde el puerto 19092
@@ -109,7 +105,6 @@ services:
       KAFKA_TOPIC: earthquakes
       KAFKA_GROUP: earthquake-processor
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      API_NOTIFY_URL: http://api:8000/internal/earthquakes/notify
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
       GEOJSON_PATH: /app/data/paises.geojson
     depends_on: #depende tanto de kafka como de la base de datos ya que si esta no esta disponible no tiene donde volcar los datos
