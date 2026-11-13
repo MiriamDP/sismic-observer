@@ -20,7 +20,8 @@ from routers import (
     health,
     earthquakes,
     imports,
-    internal
+    internal,
+    countries
 )
 
 
@@ -209,3 +210,4 @@ app.include_router(health.router)
 app.include_router(earthquakes.router)
 app.include_router(imports.router)
 app.include_router(internal.router)
+app.include_router(countries.router)
