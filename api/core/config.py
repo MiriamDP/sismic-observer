@@ -10,7 +10,7 @@ class Settings:
 
     KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP","kafka:19092")
 
-    KAFKA_TOPIC = os.getenv("KAFKA_TOPIC","earthquakes")
+    KAFKA_TOPIC = os.getenv("KAFKA_REPLAY_TOPIC","earthquakes-replay")
 
     USGS_URL = "https://earthquake.usgs.gov/fdsnws/event/1/query"
 

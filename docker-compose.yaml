@@ -70,7 +70,7 @@ services:
     build: ./producer # docker compstruira una imagen usando los archivos de este directorio
     environment:
       KAFKA_BOOTSTRAP: kafka:19092
-      KAFKA_TOPIC: earthquakes # nombre del topic al que enviara
+      KAFKA_TOPIC: earthquakes-live # nombre del topic al que enviara
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       USGS_URL: https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson
       POLL_INTERVAL: 60
@@ -98,14 +98,13 @@ services:
       start_period: 10s
     ports:
       - 8082:8082
-  consumer:
+  consumer-live:
     build: ./consumer
     environment:
       KAFKA_BOOTSTRAP: kafka:19092
-      KAFKA_TOPIC: earthquakes
-      KAFKA_GROUP: earthquake-processor
+      KAFKA_TOPIC: earthquakes-live
+      KAFKA_GROUP: earthquake-live-processor
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
       GEOJSON_PATH: /app/data/paises.geojson
     depends_on: #depende tanto de kafka como de la base de datos ya que si esta no esta disponible no tiene donde volcar los datos
       kafka:
@@ -125,10 +124,38 @@ services:
       timeout: 3s
       retries: 12
       start_period: 10s
-    ports:
-      - 8081:8081
     volumes:
       - ../sismic-panel/public/datos/paises.geojson:/app/data/paises.geojson:ro
+  consumer-replay:
+    build: ./consumer
+    environment:
+      KAFKA_BOOTSTRAP: kafka:19092
+      KAFKA_TOPIC: earthquakes-replay
+      KAFKA_GROUP: earthquake-replay-processor
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      GEOJSON_PATH: /app/data/paises.geojson
+    depends_on: #depende tanto de kafka como de la base de datos ya que si esta no esta disponible no tiene donde volcar los datos
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy 
+    restart: unless-stopped
+    healthcheck:
+      test:
+          [
+            "CMD",
+            "python",
+            "-c",
+            "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health')",
+          ]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    volumes:
+      - ../sismic-panel/public/datos/paises.geojson:/app/data/paises.geojson:ro
+    deploy:
+     replicas: 3
 
   api:
     build: ./api
@@ -137,9 +164,8 @@ services:
       HISTORICAL_IMPORT_ENABLED: "true"
       HISTORICAL_IMPORT_START_DATE: "2025-01-01" #puede tardar hasta 15min
       HISTORICAL_IMPORT_MIN_MAGNITUDE: ""
-      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
       KAFKA_BOOTSTRAP: kafka:19092
-      KAFKA_TOPIC: earthquakes
+      KAFKA_TOPIC: earthquakes-replay
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:

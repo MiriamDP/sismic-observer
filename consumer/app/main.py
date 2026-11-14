@@ -158,8 +158,12 @@ async def lifespan(app: FastAPI):
     # Persistir catálogo en PostgreSQL
     await database.save_countries(countries)
 
+    # logger.info("Iniciando backfill geográfico")
+
     # Enriquecer los eventos que ya estaban almacenados
-    await database.backfill_country_codes(geography)
+    #await database.backfill_country_codes(geography)
+
+    # logger.info("Backfill geográfico terminado")
 
     task = asyncio.create_task(consume_messages(app, geography))
 

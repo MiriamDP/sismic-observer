@@ -1,6 +1,8 @@
 
+from datetime import date
 from math import ceil
 
+from models.earthquake_models import EarthquakeComparisonFilters
 from repositories.earthquake_repository import earthquake_repository
 
 
@@ -90,6 +92,112 @@ class EarthquakeService:
         return {
             "filters": filters.model_dump(),
             **result
+        }
+
+
+    async def get_earthquake_comparison(
+    self,
+    filters: EarthquakeComparisonFilters
+    ):
+
+        # ------------------------------------
+        # 1. CONSTRUIR FECHAS DEL PRIMER AÑO
+        # ------------------------------------
+
+        try:
+
+            first_start = date(
+                filters.first_year,
+                filters.start_month,
+                filters.start_day
+            )
+
+            first_end = date(
+                filters.first_year,
+                filters.end_month,
+                filters.end_day
+            )
+
+            # ------------------------------------
+            # 2. CONSTRUIR FECHAS DEL SEGUNDO AÑO
+            # ------------------------------------
+
+            second_start = date(
+                filters.second_year,
+                filters.start_month,
+                filters.start_day
+            )
+
+            second_end = date(
+                filters.second_year,
+                filters.end_month,
+                filters.end_day
+            )
+
+        except ValueError as error:
+
+            raise ValueError(
+                "El intervalo contiene una fecha que no existe "
+                "en alguno de los años seleccionados"
+            ) from error
+
+        # ------------------------------------
+        # 3. OBTENER MÉTRICAS DEL PRIMER AÑO
+        # ------------------------------------
+
+        first_period = await self.repository.get_earthquake_metrics(
+
+            mode="all",
+
+            start_date=first_start,
+            end_date=first_end,
+
+            min_magnitude=filters.min_magnitude,
+            max_magnitude=filters.max_magnitude,
+
+            min_depth=filters.min_depth,
+            max_depth=filters.max_depth,
+
+            country_code=filters.country_code,
+            
+
+        )
+
+        # ------------------------------------
+        # 4. OBTENER MÉTRICAS DEL SEGUNDO AÑO
+        # ------------------------------------
+
+        second_period = await self.repository.get_earthquake_metrics(
+
+            mode="all",
+
+            start_date=second_start,
+            end_date=second_end,
+
+            min_magnitude=filters.min_magnitude,
+            max_magnitude=filters.max_magnitude,
+
+            min_depth=filters.min_depth,
+            max_depth=filters.max_depth,
+
+            country_code=filters.country_code
+
+        )
+
+        # ------------------------------------
+        # 5. CONSTRUIR RESPUESTA
+        # ------------------------------------
+
+        return {
+
+            "first_year": filters.first_year,
+
+            "second_year": filters.second_year,
+
+            "first_period": first_period,
+
+            "second_period": second_period
+
         }
 
 earthquake_service = EarthquakeService(

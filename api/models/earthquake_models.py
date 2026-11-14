@@ -2,7 +2,7 @@
 from datetime import datetime
 from datetime import date
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict,model_validator
 
 class EarthquakeFilters(BaseModel):
     """Filtros disponibles para consultar terremotos."""
@@ -120,3 +120,79 @@ class EarthquakeMetricsResponse(BaseModel):
     time_distribution: TimeDistribution
 
     magnitude_depth: list[MagnitudeDepthPoint]
+
+class EarthquakeComparisonFilters(BaseModel):
+
+    start_day: int = Field(ge=1, le=31)
+    start_month: int = Field(ge=1, le=12)
+
+    end_day: int = Field(ge=1, le=31)
+    end_month: int = Field(ge=1, le=12)
+
+    first_year: int = Field(ge=1900)
+    second_year: int = Field(ge=1900)
+
+    country_code: str | None = None
+
+    min_magnitude: float | None = None
+    max_magnitude: float | None = None
+
+    min_depth: float | None = None
+    max_depth: float | None = None
+
+    @model_validator(mode="after")
+    def validate_filters(self):
+
+        if self.first_year == self.second_year:
+            raise ValueError("Los años deben ser diferentes")
+
+        start = self.start_month * 100 + self.start_day
+        end = self.end_month * 100 + self.end_day
+
+        if start > end:
+            raise ValueError(
+                "La fecha inicial debe ser anterior a la final"
+            )
+
+        if (
+            self.min_magnitude is not None
+            and self.max_magnitude is not None
+            and self.min_magnitude > self.max_magnitude
+        ):
+            raise ValueError("Rango de magnitud no válido")
+
+        if (
+            self.min_depth is not None
+            and self.max_depth is not None
+            and self.min_depth > self.max_depth
+        ):
+            raise ValueError("Rango de profundidad no válido")
+
+        return self
+
+
+class EarthquakeMetricsData(BaseModel):
+
+    summary: EarthquakeSummary
+
+    top_countries: list[CountryEarthquakeStats]
+
+    time_distribution: TimeDistribution
+
+    magnitude_depth: list[MagnitudeDepthPoint]
+    
+class EarthquakeComparisonMetricsResponse(BaseModel):
+
+    first_year: int
+
+    second_year: int
+
+    first_period: EarthquakeMetricsData
+
+    second_period: EarthquakeMetricsData
+
+
+
+class EarthquakeMetricsResponse(EarthquakeMetricsData):
+
+    filters: EarthquakeAnalysisFilters

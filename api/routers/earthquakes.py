@@ -3,10 +3,11 @@ import logging
 
 from datetime import datetime
 from datetime import date
+from pydantic import ValidationError
 
 from fastapi import APIRouter, HTTPException, Query
 
-from models.earthquake_models import EarthquakeListResponse, EarthquakeResponse
+from models.earthquake_models import EarthquakeComparisonFilters, EarthquakeComparisonMetricsResponse, EarthquakeListResponse, EarthquakeResponse
 from services.earthquake_service import earthquake_service
 
 from models.earthquake_models import (
@@ -185,6 +186,70 @@ async def get_earthquake_metrics(
         raise HTTPException(
             status_code=500,
             detail="Error calculating earthquake metrics"
+        )
+
+
+@router.get(
+    "/metrics/comparison",
+    response_model=EarthquakeComparisonMetricsResponse
+)
+async def get_earthquake_comparison(
+
+    start_day: int = Query(..., ge=1, le=31),
+    start_month: int = Query(..., ge=1, le=12),
+
+    end_day: int = Query(..., ge=1, le=31),
+    end_month: int = Query(..., ge=1, le=12),
+
+    first_year: int = Query(..., ge=1900),
+    second_year: int = Query(..., ge=1900),
+
+    country_code: str | None = None,
+
+    min_magnitude: float | None = None,
+    max_magnitude: float | None = None,
+
+    min_depth: float | None = None,
+    max_depth: float | None = None
+
+):
+
+    try:
+
+        filters = EarthquakeComparisonFilters(
+            start_day=start_day,
+            start_month=start_month,
+            end_day=end_day,
+            end_month=end_month,
+            first_year=first_year,
+            second_year=second_year,
+            country_code=country_code,
+            min_magnitude=min_magnitude,
+            max_magnitude=max_magnitude,
+            min_depth=min_depth,
+            max_depth=max_depth
+        )
+
+        return await earthquake_service.get_earthquake_comparison(
+            filters
+        )
+
+    except ValueError as error:
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(error)
+        )
+
+    except Exception:
+
+        logger.exception(
+            "Error calculando comparativa de terremotos"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail="Error calculando la comparación de terremotos"
         )
 
 @router.get("/{earthquake_id}")
