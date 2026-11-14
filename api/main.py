@@ -14,7 +14,7 @@ from services.usgs_service import usgs_service
 from services.import_service import import_service
 from services.event_listener import notification_listener
 
-from kafka.kafka_replay import replay_publisher
+from kafka.kafka_replay_client import replay_producer_client
 
 from routers import (
     health,
@@ -77,9 +77,9 @@ async def lifespan(app: FastAPI):
             # KAFKA
             # ------------------------------------------
 
-            await replay_publisher.start()
+            await replay_producer_client.connect()
 
-            stack.push_async_callback(replay_publisher.stop)
+            stack.push_async_callback(replay_producer_client.close)
            # ------------------------------------------
             # RECUPERAR IMPORTS 
             # ------------------------------------------
@@ -91,7 +91,7 @@ async def lifespan(app: FastAPI):
             # ------------------------------------------
 
             app.state.database = database
-            app.state.replay_publisher = replay_publisher
+            app.state.replay_producer_client = replay_producer_client
             app.state.import_service = import_service
 
             # ------------------------------------------

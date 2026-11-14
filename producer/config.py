@@ -8,7 +8,7 @@ class Settings:
 
     # Kafka
     KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "kafka:19092")
-    KAFKA_TOPIC = os.getenv("KAFKA_LIVE_TOPIC", "earthquakes-live")
+    KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "earthquakes-live")
 
     # PostgreSQL
     DATABASE_URL = os.getenv("DATABASE_URL")

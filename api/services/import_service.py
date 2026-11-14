@@ -7,11 +7,9 @@ from datetime import date, datetime, time, timedelta, timezone
 
 from services.usgs_service import usgs_service
 from repositories.import_repository import import_repository
-from kafka.kafka_replay import replay_publisher
 from core.config import settings
-from kafka.kafka_replay import (
-    replay_publisher,
-    KafkaPublishError
+from kafka.kafka_replay_client import (
+    replay_producer_client,
 )
 
 
@@ -21,24 +19,30 @@ logger = logging.getLogger("api.import.service")
 class ImportService:
     """Coordina las importaciones históricas de terremotos."""
 
-    def __init__(self, repository, usgs_service, replay_publisher):
+    def __init__(self, repository, usgs_service, replay_client):
 
         self.repository = repository
         self.usgs_service = usgs_service
-        self.replay_publisher = replay_publisher
+        self.replay_client = replay_client
         self.active_tasks = {}
 
 
-    async def import_interval(self, job_id, start, end, min_magnitude):
-        """Consulta USGS y publica los eventos en Kafka. Para un intervalo de tiempo dato"""
 
-        features = await self.usgs_service.fetch_events(
+    async def import_interval(self, job_id, start, end, min_magnitude):
+        """Consulta USGS y envía la extracción completa a producer-replay."""
+
+        # 1. Consultar USGS.
+        extraction = await self.usgs_service.fetch_events(
             start,
             end,
             min_magnitude
         )
 
-        # Si alcanzamos el límite de USGS, dividimos el intervalo.
+        # 2. Obtener los eventos del GeoJSON.
+        geojson = extraction.data
+        features = geojson.get("features", [])
+
+        # 3. Si alcanzamos el límite de USGS, dividimos el intervalo.
         if len(features) >= settings.USGS_LIMIT:
 
             duration = end - start
@@ -68,38 +72,43 @@ class ImportService:
 
             return first_published + second_published
 
-        # Publicar eventos en Kafka.
-
-        async def update_progress(count):
-            await self.repository.increment_published_events(
-                job_id,
-                count
-            )
-
         try:
 
-            published = await self.replay_publisher.publish_many(
-                features,
-                on_progress=update_progress,
-                batch_size=100
+            # 4. Enviar la extracción completa al productor replay.
+            result = await self.replay_client.publish_extraction(
+                extraction
             )
 
-        except KafkaPublishError as exc:
+            published = result["published"]
 
-            logger.error(
-                "Publicación parcial del intervalo: "
-                "job=%s | confirmados=%s",
-                job_id,
-                exc.published
+            # 5. Actualizar el progreso de la importación.
+            if published > 0:
+
+                await self.repository.increment_published_events(
+                    job_id,
+                    published
+                )
+
+            # 6. Detectar publicaciones parciales.
+            if result.get("status") != "success" or result.get("failed", 0) > 0:
+                raise RuntimeError(
+                    "Publicación parcial en producer-replay: "
+                    f"confirmados={published}, "
+                    f"fallidos={result.get('failed', 0)}"
+                )
+
+        except Exception:
+
+            logger.exception(
+                "Error procesando intervalo: %s - %s",
+                start,
+                end
             )
-
-            # El progreso ya se actualiza mediante on_progress
-            # para los bloques confirmados.
 
             raise
 
         logger.info(
-            "Intervalo publicado: %s - %s | recibidos=%s | publicados=%s",
+            "Intervalo procesado: %s - %s | recibidos=%s | publicados=%s",
             start,
             end,
             len(features),
@@ -107,6 +116,9 @@ class ImportService:
         )
 
         return published
+
+
+
     # --------------------------------------------------
     # EJECUTAR IMPORTACIÓN HISTÓRICA
     # --------------------------------------------------
@@ -601,5 +613,5 @@ class ImportService:
 import_service = ImportService(
     repository=import_repository,
     usgs_service=usgs_service,
-    replay_publisher=replay_publisher
+    replay_client=replay_producer_client
 )

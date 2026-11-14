@@ -134,11 +134,33 @@ async def lifespan(app: FastAPI):
         # para que la api pueda acceder a ellos
         app.state.pool = pool
         app.state.kafka = kafka
+        app.state.http_client = http_client
 
-        # Iniciar tarea periódica
-        producer_task = asyncio.create_task(
-            producer_loop(pool,kafka,http_client)
-        )
+        # Iniciar el ciclo periódico únicamente en live
+        if settings.MODE == "live":
+
+            state.running = True
+
+            producer_task = asyncio.create_task(
+                producer_loop(pool, kafka, http_client)
+            )
+
+            logger.info("Productor iniciado en modo LIVE")
+
+        elif settings.MODE == "replay":
+
+            state.running = True
+
+            logger.info(
+                "Productor iniciado en modo REPLAY. "
+                "Esperando extracciones de la API."
+            )
+
+        else:
+
+            raise ValueError(
+                f"Modo de productor no válido: {settings.MODE}"
+            )
 
         yield
 

@@ -65,7 +65,7 @@ services:
       retries: 12
       start_period: 10s
 
-  producer:
+  producer-live:
     # enviara los mensajes a kafka desde el puerto 19092
     build: ./producer # docker compstruira una imagen usando los archivos de este directorio
     environment:
@@ -78,6 +78,7 @@ services:
       MODE: live
       HTTP_TIMEOUT: 30
       MAX_RETRIES: 5
+      PORT: 8082
     depends_on:
       kafka: # servicio del que depende
         condition: service_healthy
@@ -98,6 +99,45 @@ services:
       start_period: 10s
     ports:
       - 8082:8082
+  
+  
+  producer-replay:
+    # enviara los mensajes a kafka desde el puerto 19092
+    build: ./producer # docker compstruira una imagen usando los archivos de este directorio
+    environment:
+      KAFKA_BOOTSTRAP: kafka:19092
+      KAFKA_TOPIC: earthquakes-replay # nombre del topic al que enviara
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      USGS_URL: http://api:8000/api/import
+      POLL_INTERVAL: 60
+      SOURCE: USGS
+      MODE: replay
+      HTTP_TIMEOUT: 30
+      MAX_RETRIES: 5
+      PORT: 8083
+    depends_on:
+      kafka: # servicio del que depende
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped # docker intentara reiniciarlo si termina inesperadamente, no se reinicia a no ser que lo paremos nosotros explicitamente
+    healthcheck: # comprueba un endpoint especifico del productor
+      test:
+          [
+            "CMD",
+            "python",
+            "-c",
+            "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8083/health')",
+          ]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    ports:
+      - 8083:8083
+  
+  
+  
   consumer-live:
     build: ./consumer
     environment:
@@ -166,12 +206,15 @@ services:
       HISTORICAL_IMPORT_MIN_MAGNITUDE: ""
       KAFKA_BOOTSTRAP: kafka:19092
       KAFKA_TOPIC: earthquakes-replay
+      REPLAY_PRODUCER_URL: http://producer-replay:8083
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
       kafka:
+        condition: service_healthy
+      producer-replay:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
@@ -199,6 +242,22 @@ services:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+
+  
+  notebook:
+    build: ./notebooks
+    container_name: sismic-notebook
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    ports:
+      - "127.0.0.1:8888:8888"
+    volumes:
+      - ./notebooks:/workspace
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
 
 
 volumes:

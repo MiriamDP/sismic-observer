@@ -21,5 +21,9 @@ class Settings:
     HISTORICAL_IMPORT_START_DATE = date.fromisoformat(os.getenv("HISTORICAL_IMPORT_START_DATE", "2025-01-01"))
 
     HISTORICAL_IMPORT_MIN_MAGNITUDE = os.getenv("HISTORICAL_IMPORT_MIN_MAGNITUDE","")
+    REPLAY_PRODUCER_URL = os.getenv(
+    "REPLAY_PRODUCER_URL",
+    "producer-replay:8083"
+    )
 
 settings = Settings()

@@ -1,7 +1,9 @@
 '''Modulo de peticiones a usgs'''
 import asyncio
+from datetime import datetime, timezone
 import logging
 import random
+from models.usgs_extraction_model import USGSExtraction
 import httpx
 
 from core.config import settings
@@ -139,7 +141,6 @@ class USGSService:
     # --------------------------------------------------
 
     async def fetch_events(self, start, end, min_magnitude=None):
-        """Obtiene eventos sísmicos de USGS en formato GeoJSON."""
 
         params = {
             "format": "geojson",
@@ -152,42 +153,31 @@ class USGSService:
         if min_magnitude is not None:
             params["minmagnitude"] = min_magnitude
 
+        requested_at = datetime.now(timezone.utc)
+
         try:
 
             response = await self._request(params)
 
+            completed_at = datetime.now(timezone.utc)
+
+            original_body = response.text
             data = response.json()
 
             if not isinstance(data, dict):
-                raise ValueError(
-                    "La respuesta de USGS no es un objeto JSON válido"
-                )
+                raise ValueError("Respuesta JSON inválida")
 
-            features = data.get("features")
+            if not isinstance(data.get("features"), list):
+                raise ValueError("La respuesta no contiene features válidas")
 
-            if not isinstance(features, list):
-                raise ValueError(
-                    "La respuesta de USGS no contiene una lista de eventos"
-                )
-
-            logger.info(
-                "Consulta USGS completada: %s - %s | eventos=%s",
-                start,
-                end,
-                len(features)
+            return USGSExtraction(
+                data=data,
+                original_body=original_body,
+                request_url=str(response.url),
+                requested_at=requested_at,
+                completed_at=completed_at,
+                http_status=response.status_code
             )
-
-            return features
-
-        except ValueError:
-
-            logger.exception(
-                "Respuesta inválida de USGS: %s - %s",
-                start,
-                end
-            )
-
-            raise
 
         except Exception:
 
@@ -198,6 +188,5 @@ class USGSService:
             )
 
             raise
-
 
 usgs_service = USGSService()

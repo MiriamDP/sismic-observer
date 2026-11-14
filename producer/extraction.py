@@ -1,8 +1,13 @@
+
 '''Modulo con la lógica de negocio del productor'''
+
 import asyncio
 import hashlib
 import json
 import logging
+
+from datetime import datetime, timezone
+
 from database import (
     save_raw_extraction,
     register_ingestion,
@@ -11,21 +16,26 @@ from database import (
     save_exclusion
 )
 
-from datetime import datetime, timezone
-
 from config import settings
-
 from usgs_client import fetch_earthquakes
+
 
 logger = logging.getLogger("producer.extraction")
 
 
 def calculate_hash(data):
-    """Calcula una huella SHA-256 del contenido de un evento"""
+    """Calcula una huella SHA-256 del contenido de un evento."""
 
-    serialized = json.dumps(data, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    serialized = json.dumps(
+        data,
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":")
+    )
 
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        serialized.encode("utf-8")
+    ).hexdigest()
 
 
 def build_message(feature, ingested_at):
@@ -39,42 +49,55 @@ def build_message(feature, ingested_at):
     }
 
 
-async def process_extraction(pool, kafka, http_client):
+async def process_received_extraction(
+    pool,
+    kafka,
+    data,
+    original_body,
+    request_url,
+    requested_at,
+    completed_at,
+    http_status
+):
     """
-    Ejecuta una extracción completa:
+    Procesa una extracción recibida.
 
-    1. Consulta USGS.
-    2. Guarda la respuesta original.
-    3. Registra la extracción.
-    4. Detecta eventos nuevos y revisiones.
-    5. Publica las novedades en Kafka.
-    6. Actualiza el estado persistente.
+    No realiza ninguna petición HTTP.
+
+    Se utiliza tanto para:
+    - Extracciones obtenidas directamente de USGS (live).
+    - Extracciones recibidas desde la API principal (replay).
     """
-
-    requested_at = datetime.now(timezone.utc)
 
     raw_extraction_id = None
-    http_status = None
 
     try:
 
-        # 1. Obtener respuesta de USGS
-        data, http_status, original_body = await fetch_earthquakes(http_client)
+        # 1. Validar estructura del GeoJSON.
 
-        completed_at = datetime.now(timezone.utc)
+        if not isinstance(data, dict):
+            raise ValueError("Respuesta JSON no válida")
 
-        # 2. Conservar la respuesta original
-        original_body = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+        if not isinstance(data.get("features"), list):
+            raise ValueError(
+                "La respuesta no contiene features válidas"
+            )
 
-        raw_extraction_id = await save_raw_extraction(pool,original_body) # guardamos los datos originales
+        features = data["features"]
 
-        features = data.get("features", [])
+        # 2. Conservar la respuesta original.
 
-        # 3. Registrar extracción
+        raw_extraction_id = await save_raw_extraction(
+            pool,
+            original_body
+        )
+
+        # 3. Registrar extracción.
+
         await register_ingestion(
             pool=pool,
             raw_extraction_id=raw_extraction_id,
-            request_url=settings.USGS_URL,
+            request_url=request_url,
             requested_at=requested_at,
             completed_at=completed_at,
             http_status=http_status,
@@ -82,30 +105,68 @@ async def process_extraction(pool, kafka, http_client):
             records_received=len(features)
         )
 
-        logger.info("Extracción completada. Registros recibidos: %s", len(features))
+        logger.info(
+            "Extracción recibida. Registros: %s | Modo: %s",
+            len(features),
+            settings.MODE
+        )
 
         published = 0
         ignored = 0
         excluded = 0
         failed = 0
 
-        # 4. Procesar cada evento que llega en la peticion
+        # 4. Procesar eventos.
+
         for feature in features:
 
-            event_id = feature.get("id")
-            properties = feature.get("properties") or {}
+            if not isinstance(feature, dict):
 
-            # Sin identificador no podemos gestionar versiones
-            if not event_id:
                 await save_exclusion(
-                    pool, None, "Identificador ausente",
-                    raw_extraction_id, feature
+                    pool,
+                    None,
+                    "Evento con estructura inválida",
+                    raw_extraction_id,
+                    feature
                 )
+
                 excluded += 1
                 continue
 
-            # Excluir eventos que no sean terremotos
+            event_id = feature.get("id")
+
+            if not event_id:
+
+                await save_exclusion(
+                    pool,
+                    None,
+                    "Identificador ausente",
+                    raw_extraction_id,
+                    feature
+                )
+
+                excluded += 1
+                continue
+
+            properties = feature.get("properties") or {}
+
+            if not isinstance(properties, dict):
+
+                await save_exclusion(
+                    pool,
+                    event_id,
+                    "Propiedades del evento inválidas",
+                    raw_extraction_id,
+                    feature
+                )
+
+                excluded += 1
+                continue
+
+            # 5. Excluir eventos que no sean terremotos.
+
             if properties.get("type") != "earthquake":
+
                 await save_exclusion(
                     pool,
                     event_id,
@@ -113,64 +174,99 @@ async def process_extraction(pool, kafka, http_client):
                     raw_extraction_id,
                     feature
                 )
+
                 excluded += 1
                 continue
 
             updated_ms = properties.get("updated")
 
-            # Excluir si faltan campos necesarios o no son validos, updated es necesario para controlar revisiones
-            if (not isinstance(updated_ms, int) or isinstance(updated_ms, bool) or updated_ms < 0):
+            # 6. Validar updated.
+
+            if (
+                not isinstance(updated_ms, int)
+                or isinstance(updated_ms, bool)
+                or updated_ms < 0
+            ):
+
                 await save_exclusion(
-                    pool, event_id, "Campo updated ausente o inválido",
-                    raw_extraction_id, feature
+                    pool,
+                    event_id,
+                    "Campo updated ausente o inválido",
+                    raw_extraction_id,
+                    feature
                 )
+
                 excluded += 1
                 continue
 
-            # 5. Consultar estado persistente
-            previous = await get_last_published(pool,event_id)
+            try:
 
-            payload_hash = calculate_hash(feature)
+                # 7. Consultar estado persistente.
 
-            # 6. Detectar duplicados y versiones antiguas
-            if previous:
-                previous_updated = previous["last_published_updated_ms"]
-                previous_hash = previous["last_payload_hash"]
+                previous = await get_last_published(
+                    pool,
+                    event_id
+                )
 
-                # si la verison del evento es mas antigua que la que hay en base de datos
-                if updated_ms < previous_updated:
-                    ignored += 1
-                    continue
+                payload_hash = calculate_hash(feature)
 
-                # si ambas fechas del evento son iguales
-                if updated_ms == previous_updated:
+                # 8. Detectar duplicados y versiones antiguas.
 
-                    # si ambos eventos son los mismos
-                    if payload_hash == previous_hash:
+                if previous:
+
+                    previous_updated = previous[
+                        "last_published_updated_ms"
+                    ]
+
+                    previous_hash = previous[
+                        "last_payload_hash"
+                    ]
+
+                    if updated_ms < previous_updated:
+
                         ignored += 1
                         continue
 
-                    # si el contenido de los eventos es diferente
-                    logger.warning(
-                        "Anomalía: evento %s con igual updated "
-                        "pero contenido diferente",
-                        event_id
-                    )
+                    if updated_ms == previous_updated:
 
-                    ignored += 1
-                    continue
+                        if payload_hash == previous_hash:
 
-            try:
+                            ignored += 1
+                            continue
+
+                        logger.warning(
+                            "Anomalía: evento %s con igual updated "
+                            "pero contenido diferente",
+                            event_id
+                        )
+
+                        ignored += 1
+                        continue
+
+                # 9. Construir mensaje.
 
                 ingested_at = datetime.now(timezone.utc)
-                # 7. Construir mensaje
-                message = build_message(feature, ingested_at)
 
-                # 8. Publicar y esperar confirmación Kafka
-                await kafka.publish(event_id,message)
+                message = build_message(
+                    feature,
+                    ingested_at
+                )
 
-                # 9. Actualizar estado después de la confirmación
-                await mark_published(pool, event_id, updated_ms, payload_hash)
+                # 10. Publicar y esperar confirmación Kafka.
+
+                await kafka.publish(
+                    event_id,
+                    message
+                )
+
+                # 11. Actualizar estado después de confirmar Kafka.
+
+                await mark_published(
+                    pool,
+                    event_id,
+                    updated_ms,
+                    payload_hash
+                )
 
                 published += 1
 
@@ -183,6 +279,12 @@ async def process_extraction(pool, kafka, http_client):
                     event_id
                 )
 
+        # 12. Resultado final.
+
+        result_status = (
+            "partial" if failed > 0 else "success"
+        )
+
         logger.info(
             "Resumen extracción | Publicados=%s | Ignorados=%s | "
             "Excluidos=%s | Fallidos=%s",
@@ -193,7 +295,7 @@ async def process_extraction(pool, kafka, http_client):
         )
 
         return {
-            "status": "success",
+            "status": result_status,
             "received": len(features),
             "published": published,
             "ignored": ignored,
@@ -202,23 +304,61 @@ async def process_extraction(pool, kafka, http_client):
         }
 
     except asyncio.CancelledError:
+
         raise
 
     except Exception as exc:
+        try:
+                await register_ingestion(
+                    pool=pool,
+                    raw_extraction_id=raw_extraction_id,
+                    request_url=request_url,
+                    requested_at=requested_at,
+                    completed_at=datetime.now(timezone.utc),
+                    http_status=http_status,
+                    status="error",
+                    error_message=str(exc)
+                )
 
-        completed_at = datetime.now(timezone.utc)
+        except Exception:
+            logger.exception(
+                "No se pudo registrar el error de la extracción"
+            )
 
-        await register_ingestion(
-            pool=pool,
-            raw_extraction_id=raw_extraction_id,
-            request_url=settings.USGS_URL,
-            requested_at=requested_at,
-            completed_at=completed_at,
-            http_status=http_status,
-            status="error",
-            error_message=str(exc)
+        logger.exception(
+            "Error durante el procesamiento de la extracción"
         )
 
-        logger.exception("Error durante la extracción")
-
         raise
+
+
+async def process_extraction(pool, kafka, http_client):
+    """
+    Ejecuta una extracción live.
+
+    Consulta USGS y delega el procesamiento
+    a process_received_extraction().
+    """
+
+    requested_at = datetime.now(timezone.utc)
+
+    # 1. Obtener datos de USGS.
+
+    data, http_status, original_body = await fetch_earthquakes(
+        http_client
+    )
+
+    completed_at = datetime.now(timezone.utc)
+
+    # 2. Delegar procesamiento común.
+
+    return await process_received_extraction(
+        pool=pool,
+        kafka=kafka,
+        data=data,
+        original_body=original_body,
+        request_url=settings.USGS_URL,
+        requested_at=requested_at,
+        completed_at=completed_at,
+        http_status=http_status
+    )
