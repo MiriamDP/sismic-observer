@@ -71,6 +71,13 @@ Los servicios se ejecutan localmente con Docker Compose:
 
    La API queda disponible en `http://127.0.0.1:8000`; su comprobacion de salud es `http://127.0.0.1:8000/health` y la documentacion interactiva de FastAPI, `http://127.0.0.1:8000/docs`. JupyterLab queda disponible en `http://127.0.0.1:8888/lab?token=sismic-local`. pgAdmin se publica localmente en `http://127.0.0.1:5050`. Los healthchecks de `producer-live` y `producer-replay` estan en los puertos `8082` y `8083`, respectivamente.
 
+## Panel de usuario
+El panel de usuario se encuentra alojado en el siguiente repositorio de GitHub
+[Sismic Panel Repositorio](https://github.com/MiriamDP/sismic-panel)
+
+El enlace a la web publicada en Netlify esta en
+[Earth Watcher](https://earth-watcher-mdp.netlify.app/today)
+
 ### Ejecutar los notebooks
 
 El servicio `notebook` se inicia junto con el resto de Compose. Para levantar solo JupyterLab y su dependencia PostgreSQL:
@@ -187,7 +194,7 @@ Esta seccion resume la evidencia comprobable en el codigo/configuracion y en el 
 | --- | --- | --- |
 | Arquitectura local | `docker-compose.yaml` define Kafka, PostgreSQL, `producer-live`, `producer-replay`, consumidores y API; ambos productores usan la imagen Python de `producer/`. | El Compose incluye tambien pgAdmin y JupyterLab. Verificar la ejecucion conjunta en el equipo de demostracion. |
 | Extraccion live | `producer/usgs_client.py` consulta el feed, valida JSON y aplica reintentos; `producer/extraction.py` registra respuestas/consultas y diferencia novedades, revisiones y exclusiones. | Añadir resultados reales de latencia, tipos/completitud y registros de extraccion si se solicita evidencia cuantitativa. |
-| Integracion y calidad | `consumer/app/validator.py` valida estructura, geometria, coordenadas, fechas, magnitud, profundidad y modo; `consumer/app/geography.py` integra Natural Earth. El notebook [`01_analisis_de_calidad.ipynb`](./notebooks/01_analisis_de_calidad.ipynb) calcula completitud, exactitud del procesamiento, consistencia, validez, unicidad y actualidad. | `consumer/app/quality.py` no se invoca desde el bucle principal. Los resultados y las limitaciones de la instantanea se detallan a continuacion; sigue pendiente corregir y volver a medir la latencia live. |
+| Integracion y calidad | `consumer/app/validator.py` valida estructura, geometria, coordenadas, fechas, magnitud, profundidad y modo; `consumer/app/geography.py` integra Natural Earth; `consumer/app/quality.py` evalua los eventos transformados antes de persistirlos. El notebook [`01_analisis_de_calidad.ipynb`](./notebooks/01_analisis_de_calidad.ipynb) calcula completitud, exactitud del procesamiento, consistencia, validez, unicidad y actualidad. | El analisis del notebook es una instantanea previa a la integracion de `quality.py` y sus limitaciones se detallan a continuacion; sigue pendiente corregir y volver a medir la latencia live. |
 | Versionado/idempotencia | `consumer/app/database.py` persiste revisiones y actualiza el estado solo con versiones mas recientes; el commit se realiza despues de persistir. | Adjuntar evidencia de pruebas de duplicado, version posterior, version antigua y reinicio del consumidor. |
 | API y analisis | Endpoints de listado, filtros, agregaciones y comparacion en `api/routers/earthquakes.py`; importacion historica en `api/services/import_service.py`. | La comparacion del endpoint admite periodos equivalentes por parametros, pero falta documentar resultados numericos y conclusiones fundamentadas. |
 | Complejidad, rendimiento y costes | Existen operaciones con indices SQL, upserts y STRtree espacial. | Faltan mediciones de tiempo/memoria con al menos tres tamaños, comparaciones de indice/busqueda, estimacion de costes, escalado y reflexion documentada. |

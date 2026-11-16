@@ -80,11 +80,11 @@ Los rechazos que se guardan correctamente conservan el mensaje original y una ra
 
 [`app/transformer.py`](./app/transformer.py) mapea los campos USGS al modelo de persistencia, mantiene `updated_ms` para ordenar versiones y calcula una huella SHA-256 del mensaje. La huella se guarda junto al JSON original de cada versión.
 
-Existe [`app/quality.py`](./app/quality.py), con comprobaciones de faltantes, valores negativos que requieren revisión, consistencia temporal y asignación geográfica. **Estas funciones no se invocan en el bucle principal actual**, por lo que no generan automáticamente resultados ni registros de calidad durante el consumo. Las comprobaciones efectivamente aplicadas son las de `validator.py`; no se rechazan magnitudes negativas ni profundidades negativas por sí mismas.
+[`app/quality.py`](./app/quality.py) se ejecuta después de validar, transformar y asignar `country_code`, antes de guardar el evento. Comprueba faltantes, valores negativos que requieren revisión, consistencia temporal y asignación geográfica. Sus incidencias se escriben en los logs; no rechazan ni ponen en cuarentena el evento. La falta de país se conserva como `NULL` y solo se registra a nivel DEBUG, porque un terremoto sin país asignado no es necesariamente un error. No se rechazan magnitudes ni profundidades negativas por sí mismas.
 
 ### Resultados del análisis post-procesamiento
 
-El notebook [`../notebooks/01_analisis_de_calidad.ipynb`](../notebooks/01_analisis_de_calidad.ipynb) analiza una instantánea de PostgreSQL de noviembre de 2026: 396.844 eventos actuales, 397.053 versiones y 177 países. Los resultados detallados y sus implicaciones para el sistema están en la sección [Resultados y consideraciones del análisis de calidad](../README.md#resultados-y-consideraciones-del-análisis-de-calidad).
+El notebook [`../notebooks/01_analisis_de_calidad.ipynb`](../notebooks/01_analisis_de_calidad.ipynb) analiza una instantánea de PostgreSQL de noviembre de 2026: 396.844 eventos actuales, 397.053 versiones y 177 países. Es una evaluación post-procesamiento de esos datos y precede a la integración de `quality.py` en el bucle de consumo; no refleja los logs generados por esta llamada. Los resultados detallados y sus implicaciones para el sistema están en la sección [Resultados y consideraciones del análisis de calidad](../README.md#resultados-y-consideraciones-del-análisis-de-calidad).
 
 En esa instantánea, los campos estructurales obligatorios, la validez según las reglas comprobadas, la unicidad por `(event_id, mode)` y la correspondencia de los campos comparados con los mensajes originales alcanzan el 100%. Magnitud y tipo de magnitud tienen 21 nulos cada uno; deben conservarse como nulos. Hay 97.923 eventos sin país asignado (24,68%), que no se consideran errores por sí mismos. La tabla de cuarentena estaba vacía: esto describe los datos observados, pero no sustituye pruebas con mensajes inválidos.
 
@@ -176,6 +176,6 @@ docker compose up --build -d
 | [`app/transformer.py`](./app/transformer.py) | Conversión del mensaje a campos persistibles y cálculo de la huella. |
 | [`app/geography.py`](./app/geography.py) | Carga del catálogo Natural Earth y asignación espacial del país. |
 | [`app/database.py`](./app/database.py) | Pool PostgreSQL, persistencia transaccional, cuarentena y notificación `new_earthquake`. |
-| [`app/quality.py`](./app/quality.py) | Reglas de evaluación de calidad disponibles, actualmente no conectadas al bucle de consumo. |
+| [`app/quality.py`](./app/quality.py) | Evalúa incidencias después del enriquecimiento geográfico y antes de persistir; registra hallazgos sin rechazar el evento. |
 | [`Dockerfile`](./Dockerfile) | Imagen Python y comando de arranque del servicio. |
 | [`requirements.txt`](./requirements.txt) | Dependencias Python fijadas. |

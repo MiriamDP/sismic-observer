@@ -82,6 +82,26 @@ def assess_quality(event: dict) -> list[str]:
 def log_quality_issues(event_id: str, issues: list[str]):
 
     if not issues:
+        logger.info(
+            "Análisis de calidad del evento %s: OK",
+            event_id
+        )
         return
 
-    logger.warning("Calidad del evento %s: %s", event_id, ", ".join(issues))
+    review_issues = [
+        issue for issue in issues
+        if issue != "country_not_assigned"
+    ]
+
+    if review_issues:
+        logger.warning(
+            "Calidad del evento %s: %s",
+            event_id,
+            ", ".join(review_issues)
+        )
+
+    if "country_not_assigned" in issues:
+        logger.debug(
+            "Evento %s sin país asignado; se conserva sin atribución",
+            event_id
+        )

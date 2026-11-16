@@ -82,18 +82,22 @@ async def consume_messages(app,geography):
                 event = transform_message(data)
                 event["country_code"] = geography.find_country(event["longitude"], event["latitude"])
 
-                # 5. Guardar en PostgreSQL
+                # 5. Evaluar la calidad sin rechazar el evento
+                quality_issues = assess_quality(event)
+                log_quality_issues(event["event_id"], quality_issues)
+
+                # 6. Guardar en PostgreSQL
                 result = await database.save_event(event)
 
                 logger.info("Evento %s: %s", event["event_id"], result)
 
-                # 6. Notificar a la API
+                # 7. Notificar a la API
                 mode = data.get("mode")
                 if mode == "live":
 
                     await database.notify_new_event(event)
 
-                # 7. Confirmar offset
+                # 8. Confirmar offset
                 await consumer.commit({
                     TopicPartition(message.topic, message.partition): OffsetAndMetadata(
                         message.offset + 1, ""
