@@ -7,27 +7,24 @@ Este README describe el backend y su puesta en marcha. No incluye instrucciones 
 ## Arquitectura
 
 ```text
-USGS (feed de ultimas 24 h) ──> productor Python ──> Kafka: earthquakes-live
-                                                              │
-                                                              v
-                                                     consumidor Python
-                                                              │
-                                                              v
-                                                          PostgreSQL
-                                                              ^
-                                                              │
-USGS (catalogo historico) ──> API FastAPI ──> Kafka: earthquakes-replay
-                                  │
-                                  └── consultas y metricas
+USGS (feed 24 h) ──> producer-live ──> Kafka: earthquakes-live ──> consumer-live ──┐
+                                                                                  │
+API ──> USGS (historico) ──HTTP──> producer-replay ──> Kafka: earthquakes-replay ──> consumer-replay ─┤
+                                                                                  v
+                                                                              PostgreSQL
+                                                                                  ^
+                                                                                  │
+                                                              API (consultas y metricas)
 ```
 
 Los servicios se ejecutan localmente con Docker Compose:
 
-- **Productor**: consulta el feed GeoJSON de USGS cada 60 segundos, guarda la respuesta y la consulta, detecta eventos nuevos/revisados y publica los cambios en Kafka.
+- **`producer-live`**: consulta cada 60 segundos el feed GeoJSON de las ultimas 24 horas, guarda la respuesta y la consulta, detecta eventos nuevos/revisados y publica los cambios en `earthquakes-live`.
+- **`producer-replay`**: no hace sondeo periodico. Recibe de la API las extracciones historicas por HTTP (`POST /extract`), conserva su original y metadatos, y publica los eventos en `earthquakes-replay`.
 - **Kafka**: separa los topics `earthquakes-live` y `earthquakes-replay`. La configuracion conserva los mensajes hasta siete dias.
 - **Consumidores**: validan y transforman mensajes, asignan pais por punto-en-poligono y guardan eventos, versiones y rechazos en PostgreSQL. El modo `replay` se mantiene separado de `live`.
 - **PostgreSQL**: persiste datos originales, estado del productor, ejecuciones de ingesta, catalogo de paises, estado actual de eventos, revisiones y cuarentena.
-- **API FastAPI**: consulta los datos procesados y puede importar el historico USGS y publicarlo en Kafka para su procesamiento.
+- **API FastAPI**: consulta los datos procesados y coordina las importaciones historicas. Descarga los datos de USGS y los entrega a `producer-replay` por HTTP; no publica directamente en Kafka.
 - **JupyterLab (`notebook`)**: ejecuta los notebooks en un contenedor Python conectado a PostgreSQL. La carpeta `notebooks/` se monta en el contenedor para que los cambios en los ficheros queden en el equipo anfitrion.
 - **pgAdmin**: servicio auxiliar incluido en Compose para inspeccionar PostgreSQL.
 
@@ -69,10 +66,10 @@ Los servicios se ejecutan localmente con Docker Compose:
 
    ```powershell
    docker compose ps
-   docker compose logs -f producer consumer-live api notebook
+   docker compose logs -f producer-live producer-replay consumer-live consumer-replay api notebook
    ```
 
-   La API queda disponible en `http://127.0.0.1:8000`; su comprobacion de salud es `http://127.0.0.1:8000/health` y la documentacion interactiva de FastAPI, `http://127.0.0.1:8000/docs`. JupyterLab queda disponible en `http://127.0.0.1:8888/lab?token=sismic-local`. pgAdmin se publica localmente en `http://127.0.0.1:5050`. El productor tambien publica su endpoint de salud en el puerto `8082`.
+   La API queda disponible en `http://127.0.0.1:8000`; su comprobacion de salud es `http://127.0.0.1:8000/health` y la documentacion interactiva de FastAPI, `http://127.0.0.1:8000/docs`. JupyterLab queda disponible en `http://127.0.0.1:8888/lab?token=sismic-local`. pgAdmin se publica localmente en `http://127.0.0.1:5050`. Los healthchecks de `producer-live` y `producer-replay` estan en los puertos `8082` y `8083`, respectivamente.
 
 ### Ejecutar los notebooks
 
@@ -113,7 +110,7 @@ HISTORICAL_IMPORT_START_DATE: "2025-01-01"
 HISTORICAL_IMPORT_MIN_MAGNITUDE: "4"
 ```
 
-La API divide la descarga en intervalos mensuales y subdivide los que alcanzan el limite de USGS; conserva el progreso para recuperarse de interrupciones. Puede tardar y generar bastante trafico/datos. Consulta su estado con:
+La API consulta USGS, divide la descarga en intervalos mensuales y subdivide los que alcanzan el limite de USGS. En cada intervalo envia a `producer-replay` por HTTP la extraccion GeoJSON original y sus metadatos; ese productor realiza el filtrado, la deduplicacion, la persistencia de la extraccion y la publicacion confirmada en Kafka. La API conserva el progreso del trabajo para recuperarse de interrupciones, pero no escribe mensajes en Kafka. La API depende de que `producer-replay` este saludable. La carga puede tardar y generar bastante trafico/datos. Consulta el estado con:
 
 ```text
 GET http://127.0.0.1:8000/api/earthquakes/import-history/status
@@ -130,7 +127,7 @@ Tambien se puede solicitar un periodo manual mediante `POST /api/earthquakes/imp
 }
 ```
 
-El historico se procesa por el topic de replay y se guarda con `mode = replay`; no debe confundirse con los eventos live. La importacion historica es una instantanea del catalogo consultado, no un registro de todas las revisiones historicas de USGS.
+El historico se procesa por el topic de replay y se guarda con `mode = replay`; no debe confundirse con los eventos live. El recorrido de publicacion es API → HTTP → `producer-replay` → Kafka → `consumer-replay` → PostgreSQL. La importacion historica es una instantanea del catalogo consultado, no un registro de todas las revisiones historicas de USGS.
 
 ## API disponible
 
@@ -159,7 +156,7 @@ FastAPI publica el esquema OpenAPI y la interfaz Swagger en `/docs`.
 - **Campos usados**: `id`; `properties.time`, `updated`, `mag`, `magType`, `type`, `place`; y `geometry.coordinates`.
 - **Coordenadas**: longitud, latitud y profundidad en kilometros. `time` y `updated` llegan en milisegundos desde Unix epoch y se transforman a UTC.
 - **Filtro de tipo**: el productor y el consumidor excluyen los elementos cuyo `properties.type` no sea `earthquake`; se conserva el evento excluido y el motivo.
-- **Historico**: API FDSN de eventos USGS, publicada en `earthquakes-replay`. Su periodo y umbral dependen de la configuracion del trabajo de importacion.
+- **Historico**: API FDSN de eventos USGS. La API de este proyecto obtiene cada intervalo y lo remite a `producer-replay` por HTTP; el productor publica los eventos en `earthquakes-replay`. El periodo y umbral dependen de la configuracion del trabajo de importacion.
 - **Geografia**: Natural Earth en GeoJSON; se comprueba la unicidad de `ADM0_A3`, se crea un indice espacial STRtree y la asignacion se hace mediante relacion espacial. Para puntos de frontera se intenta primero interior estricto (`within`) y despues cobertura de frontera (`covered_by`); en varias coincidencias se ordenan los codigos y se elige el primero. Sin coincidencia queda `country_code` nulo (sin pais asignado).
 
 El cliente HTTP del productor reintenta errores de transporte, timeout, JSON y respuestas HTTP 429/5xx con espera exponencial acotada. Las otras respuestas 4xx se propagan como error. Los originales repetidos se deduplican por SHA-256; cada intento queda registrado en `ingestion_runs`.
@@ -184,24 +181,44 @@ Hay indices sobre tiempo, pais, magnitud, revisiones, cuarentena y estado de ing
 
 ## Evidencias de los requisitos
 
-Esta seccion distingue la evidencia comprobable en el codigo/configuracion actual de los entregables que necesitan resultados experimentales o documentacion adicional. No se presentan como realizadas pruebas ni analisis que no aparecen en los ficheros revisados.
+Esta seccion resume la evidencia comprobable en el codigo/configuracion y en el notebook de calidad. Las cifras del notebook son una instantanea de la base de datos consultada durante su ejecucion, no una garantia de resultados invariantes en ejecuciones posteriores.
 
 | Area pedida | Evidencia presente en el repositorio | Pendiente para demostrar completamente el requisito |
 | --- | --- | --- |
-| Arquitectura local | `docker-compose.yaml` define Kafka, PostgreSQL, productor, consumidores y API; los servicios Python tienen Dockerfiles. | El Compose incluye tambien pgAdmin. Verificar la ejecucion conjunta en el equipo de demostracion. |
+| Arquitectura local | `docker-compose.yaml` define Kafka, PostgreSQL, `producer-live`, `producer-replay`, consumidores y API; ambos productores usan la imagen Python de `producer/`. | El Compose incluye tambien pgAdmin y JupyterLab. Verificar la ejecucion conjunta en el equipo de demostracion. |
 | Extraccion live | `producer/usgs_client.py` consulta el feed, valida JSON y aplica reintentos; `producer/extraction.py` registra respuestas/consultas y diferencia novedades, revisiones y exclusiones. | Añadir resultados reales de latencia, tipos/completitud y registros de extraccion si se solicita evidencia cuantitativa. |
-| Integracion y calidad | `consumer/app/validator.py` valida estructura, geometria, coordenadas, fechas, magnitud, profundidad y modo; `consumer/app/geography.py` integra Natural Earth; `consumer/app/quality.py` identifica faltantes y anomalías. `notebooks/01_analisis_de_calidad.ipynb` contiene el planteamiento de las seis dimensiones y la preparacion del entorno. | `quality.py` no se invoca desde el bucle principal del consumidor. El notebook todavia no contiene calculos/resultados; falta documentar porcentajes antes/despues, resultados por dimension y decisiones. |
+| Integracion y calidad | `consumer/app/validator.py` valida estructura, geometria, coordenadas, fechas, magnitud, profundidad y modo; `consumer/app/geography.py` integra Natural Earth. El notebook [`01_analisis_de_calidad.ipynb`](./notebooks/01_analisis_de_calidad.ipynb) calcula completitud, exactitud del procesamiento, consistencia, validez, unicidad y actualidad. | `consumer/app/quality.py` no se invoca desde el bucle principal. Los resultados y las limitaciones de la instantanea se detallan a continuacion; sigue pendiente corregir y volver a medir la latencia live. |
 | Versionado/idempotencia | `consumer/app/database.py` persiste revisiones y actualiza el estado solo con versiones mas recientes; el commit se realiza despues de persistir. | Adjuntar evidencia de pruebas de duplicado, version posterior, version antigua y reinicio del consumidor. |
 | API y analisis | Endpoints de listado, filtros, agregaciones y comparacion en `api/routers/earthquakes.py`; importacion historica en `api/services/import_service.py`. | La comparacion del endpoint admite periodos equivalentes por parametros, pero falta documentar resultados numericos y conclusiones fundamentadas. |
 | Complejidad, rendimiento y costes | Existen operaciones con indices SQL, upserts y STRtree espacial. | Faltan mediciones de tiempo/memoria con al menos tres tamaños, comparaciones de indice/busqueda, estimacion de costes, escalado y reflexion documentada. |
-| Pruebas de aceptacion y replay | Topic, modo y tablas separan replay de live; la importacion se hace por Kafka y el consumidor reutiliza el mismo procesamiento. | Faltan evidencias registradas/capturas de ejecucion para cada caso de aceptacion y una demostracion identificada de replay. |
+| Pruebas de aceptacion y replay | Topics, modos y tablas separan replay de live. La API entrega extracciones al productor replay por HTTP; este publica en Kafka y el consumidor replay reutiliza el mismo procesamiento que live. | Faltan evidencias registradas/capturas de ejecucion para cada caso de aceptacion y una demostracion identificada de replay. |
 
-Por tanto, el codigo implementa partes importantes del pipeline, pero el README no sustituye la memoria/notebook requerida para el analisis de calidad, resultados, conclusiones, mediciones, costes y evidencias de pruebas.
+### Resultados y consideraciones del análisis de calidad
+
+El notebook analiza datos persistidos en una instantanea de noviembre de 2026: 396.844 eventos actuales, 397.053 versiones y 177 paises. Los recuentos y porcentajes pueden cambiar cuando avanza la ingesta. El notebook contiene el detalle de consultas, cálculos y gráficos.
+
+| Dimensión o comprobación | Resultado de la instantánea | Interpretación |
+| --- | --- | --- |
+| Completitud estructural del consumidor | 100% en los campos definidos como obligatorios. Magnitud y tipo de magnitud: 99,99% cada uno (21 valores nulos de 396.844). | La magnitud ausente se conserva como nula; no debe sustituirse por cero ni eliminarse automáticamente. |
+| Fidelidad de la transformación | 100% para los 396.844 eventos comparables entre el estado actual y el mensaje original de su versión, en los campos comprobados. | Demuestra correspondencia de esos campos con el mensaje persistido, no la exactitud de la fuente USGS frente a la realidad. |
+| Validez y unicidad | 100% según las reglas probadas; 396.844 claves actuales únicas por `(event_id, mode)`. | Es un resultado sobre las filas guardadas y las reglas del notebook, no una prueba de todos los casos límite posibles. |
+| Integración geográfica | 298.921 eventos con país y 97.923 sin país (24,68%). Los códigos asignados pertenecen al catálogo. | «Sin país asignado» se mantiene como categoría válida, especialmente para eventos marinos; no se atribuye al país más cercano. |
+| Consistencia temporal | `updated >= event_time`: 100%. `processed_at >= ingested_at`: falla en 100 filas; 99 corresponden a `live` (99 de 575, 17,22%). La consistencia de `live` en el resumen del notebook es 82,78%, frente a 100% en `replay`. | La media global queda dominada por el gran volumen de `replay` y oculta el problema de `live`. |
+| Actualidad del consumidor | El notebook define como dentro del umbral una latencia entre 0 y 60 segundos: 99,95% global, 66,43% `live` y 100% `replay`. | Estos porcentajes no deben interpretarse como una medición fiable de latencia real hasta resolver los tiempos negativos de `live`. |
+| Cuarentena del consumidor | 0 filas en la tabla consultada. | Indica que no había rechazos persistidos en esa instantánea; no demuestra el comportamiento ante mensajes inválidos, que requiere pruebas controladas. |
+
+La discrepancia temporal es coherente con la implementación actual: al actualizar un evento existente, el upsert de [`consumer/app/database.py`](./consumer/app/database.py) reemplaza `ingested_at`, pero no `processed_at`, que solo se asigna al insertar la fila. Una revisión puede, por tanto, dejar en el estado actual una fecha de procesamiento antigua y producir una latencia negativa. Hay que definir y actualizar el significado de `processed_at`, separar las métricas `live` y `replay` y volver a ejecutar el análisis antes de presentar la latencia como rendimiento del consumidor.
+
+En el productor, el notebook comprueba que los SHA-256 de las respuestas almacenadas coinciden con los recalculados (100%). En cambio, su comparación del hash de `producer_event_state` con eventos extraídos da 88,83%, pero une por `event_id` sin alinear explícitamente modo y `updated_ms`; puede estar comparando revisiones distintas. Este porcentaje no prueba pérdida ni corrupción y no debe presentarse como exactitud del productor hasta rehacer la comparación sobre la misma versión y una serialización canónica.
+
+El análisis también contabiliza 9.367 exclusiones del productor (1,97% del conjunto utilizado para esa tasa), principalmente eventos cuyo tipo no es `earthquake`. Estas exclusiones son parte del filtro previsto, no necesariamente errores de ingesta. Para la comparación de calidad, conviene separar rechazos por calidad de exclusiones de negocio.
+
+El notebook satisface el análisis de varias dimensiones de calidad y conserva sus resultados, pero no sustituye las evidencias aún pendientes de las demás partes del proyecto: conclusiones del análisis sísmico con filtros y periodos equivalentes, pruebas de aceptación/replay, mediciones de rendimiento con varios tamaños, estimación de costes y reflexión de escalado.
 
 ## Configuracion y limites operativos
 
 - Los contenedores se conectan por los nombres de servicio Compose (`kafka`, `postgres`). El broker tambien anuncia un listener de host en `localhost:9092`; internamente utiliza `kafka:19092`.
-- Solo la API y pgAdmin se publican en loopback del host (`127.0.0.1`). No se publican PostgreSQL ni Kafka.
+- La API y pgAdmin se publican en loopback del host (`127.0.0.1`). Compose tambien publica los puertos de `producer-live` (`8082`) y `producer-replay` (`8083`) para sus healthchecks; no expongas esos endpoints a redes no confiables. PostgreSQL y Kafka no tienen puertos publicados por Compose.
 - El feed de 24 horas no permite inferir que USGS elimino un evento cuando deja de aparecer: puede haber salido de la ventana. Para recuperar un hueco tras una parada superior a 24 horas, solicita el periodo al endpoint historico y procesalo como replay.
 - No hay transaccion distribuida Kafka/PostgreSQL. El procesamiento es al menos una vez y depende de la idempotencia en base de datos.
 - El almacenamiento de Kafka tiene retencion de siete dias; los volumenes de PostgreSQL/Kafka persisten hasta eliminarlos manualmente. El SQL montado en `/docker-entrypoint-initdb.d` solo inicializa una base nueva.
@@ -215,7 +232,7 @@ api/                 FastAPI, importacion historica, consultas y metricas
 consumer/app/        validacion, transformacion, geografia y persistencia
 database/init.sql    esquema inicial del productor y consumidor
 notebooks/           JupyterLab y notebooks para analisis de datos
-producer/            extraccion USGS, estado de publicaciones y Kafka
+producer/            productores Python live y replay, estado y publicacion Kafka
 docker-compose.yaml  servicios, red, healthchecks y volumenes
 .env.example         plantilla de variables locales
 REQUERIMIENTOS.md    enunciado y criterios de entrega
