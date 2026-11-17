@@ -78,6 +78,9 @@ El panel de usuario se encuentra alojado en el siguiente repositorio de GitHub
 El enlace a la web publicada en Netlify esta en
 [Earth Watcher](https://earth-watcher-mdp.netlify.app/today)
 
+Video explicativo
+[Sismic Observer](https://youtu.be/KzEtNKzLNXs)
+
 ### Ejecutar los notebooks
 
 El servicio `notebook` se inicia junto con el resto de Compose. Para levantar solo JupyterLab y su dependencia PostgreSQL:
